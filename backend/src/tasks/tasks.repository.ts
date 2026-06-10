@@ -22,6 +22,11 @@ export class TasksRepository {
     );
   }
 
+  async userExists(userId: string): Promise<boolean> {
+    const rows = await this.db.query('SELECT 1 FROM users WHERE id = $1', [userId]);
+    return rows.length > 0;
+  }
+
   // upsert user จาก LINE
   async upsertUser(lineUserId: string, displayName: string) {
     await this.db.query(

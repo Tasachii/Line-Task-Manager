@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { TasksRepository } from './tasks.repository';
 import { EventsGateway } from '../realtime/events.gateway';
 import { LineClientService } from '../line/line-client.service';
@@ -54,6 +54,9 @@ export class TasksService {
   async assign(id: string, userId: string, displayName?: string): Promise<Task> {
     if (displayName) {
       await this.repo.upsertUser(userId, displayName); // กัน FK พังถ้ายังไม่มี user นี้
+    } else if (!(await this.repo.userExists(userId))) {
+      // ไม่มี user และไม่ส่งชื่อมา → ตอบ 400 ชัดๆ แทนปล่อยให้ FK พังเป็น 500
+      throw new BadRequestException('unknown user — provide displayName');
     }
     const task = await this.repo.assign(id, userId);
     if (!task) throw new NotFoundException('task not found');
