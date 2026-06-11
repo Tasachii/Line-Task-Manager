@@ -8,7 +8,7 @@ For a complete onboarding reference (architecture, data model, API, conventions)
 
 - Task intake from LINE via the `/task` keyword; one line per task, with deduplication on LINE webhook retries
 - Optional AI classification of natural-language messages (no keyword required) using the Claude API, enabled by setting `ANTHROPIC_API_KEY`
-- Priority tokens (`!high`, `!low`, `!ด่วน`) and due dates (`@YYYY-MM-DD`) parsed onto cards, with overdue indicators
+- Priority tokens (`!high`, `!low`, plus Thai aliases) and due dates (`@YYYY-MM-DD`) parsed onto cards, with overdue indicators
 - Four-column Kanban board with cross-column drag and drop and persistent in-column ordering
 - LINE push notifications on status change and assignment, with configurable status filtering to limit message quota usage
 - Realtime board updates for all connected clients over WebSocket, with a reconnection banner on connection loss
@@ -91,8 +91,8 @@ docker compose --profile full up -d --build
 9. Send a message in the group:
 
 ```
-/task แก้ปุ่ม login หน้าแรก !ด่วน @2026-07-01
-เปลี่ยนสีปุ่มเป็นสีเขียว
+/task Fix the login button on the landing page !high @2026-07-01
+Change the button color to green
 ```
 
 This creates two cards in Todo (the first with high priority and a due date), and the bot confirms the intake in the group.
