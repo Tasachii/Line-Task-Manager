@@ -71,7 +71,9 @@ docker compose --profile full up -d --build
 | `NOTIFY_STATUSES` | No | Comma-separated statuses that trigger group notifications (default: all). Set e.g. `done` to conserve quota |
 | `NOTIFY_ASSIGN` | No | Notify the group when a task is assigned (default `true`) |
 | `ANTHROPIC_API_KEY` | No | Enables AI classification of messages without the keyword |
-| `AI_EXTRACT_MODEL` | No | Claude model for extraction (default `claude-opus-4-8`; use `claude-haiku-4-5` for lower cost) |
+| `AI_EXTRACT_MODEL` | No | Claude model for extraction (default `claude-haiku-4-5`, the low-cost default; use `claude-opus-4-8` for higher accuracy) |
+| `THROTTLE_LIMIT` | No | Max board-API requests per IP per window (default `120`) |
+| `THROTTLE_TTL_MS` | No | Rate-limit window in milliseconds (default `60000`). The LINE webhook and `/health` are exempt |
 
 ## Connecting a LINE Official Account
 
@@ -124,12 +126,17 @@ WebSocket events (clients must send `auth.key` when a password is set): `task:cr
 # Unit tests (task extraction: keyword, priority, due date, grapheme-safe truncation)
 cd backend && npm run build && npm test
 
+# Integration tests (real PostgreSQL: position ordering and concurrency of createTask/move).
+# Requires Postgres up and migrated.
+docker compose up -d && npm run migrate && npm run test:integration
+
 # End-to-end tests (drives a real Chrome session: board rendering, realtime updates, drag and drop).
 # Requires the backend on :3000 (started with LINE_CHANNEL_SECRET=test_secret) and Vite on :5173.
 cd frontend && npm run test:e2e
 ```
 
-GitHub Actions builds and tests both packages on every push and pull request.
+GitHub Actions builds, unit-tests, and integration-tests the backend (with a Postgres service) and
+type-checks and builds the frontend on every push and pull request.
 
 ## Design Decisions
 
@@ -139,7 +146,9 @@ GitHub Actions builds and tests both packages on every push and pull request.
 | Multiple tasks per message | Each line after the keyword becomes one task |
 | Duplicate prevention | `message_id` is checked before insert to absorb LINE webhook retries |
 | Card ordering | A per-column `position` is persisted; ordering survives moves, inserts, and page refreshes |
-| Authentication | A single shared board password (LINE Login is planned) |
+| Ordering integrity | Position writes (`create`, `move`, status change) run in a transaction and serialize on a per-column advisory lock, so concurrent edits cannot corrupt order |
+| Authentication | A single shared board password, compared in constant time (LINE Login is planned) |
+| Rate limiting | Per-IP throttle on the board API; webhook and health checks are exempt |
 | AI failure handling | Fail-open: if extraction errors or times out, the message is skipped and the webhook is never blocked |
 
 ## Roadmap

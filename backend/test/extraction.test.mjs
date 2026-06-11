@@ -59,3 +59,49 @@ test('short title is not truncated', async () => {
   const out = await svc.extract('/task งานสั้น');
   assert.equal(out[0].title, 'งานสั้น');
 });
+
+test('priority and due date can be combined and both are stripped', async () => {
+  const out = await svc.extract('/task แก้บั๊ก checkout !high @2026-08-15');
+  assert.equal(out[0].priority, 'high');
+  assert.equal(out[0].dueDate, '2026-08-15');
+  assert.ok(!out[0].title.includes('!high'));
+  assert.ok(!out[0].title.includes('@2026'));
+  assert.equal(out[0].title, 'แก้บั๊ก checkout');
+});
+
+test('!สูง (Thai) → priority high', async () => {
+  const out = await svc.extract('/task รีบทำหน่อย !สูง');
+  assert.equal(out[0].priority, 'high');
+});
+
+test('!ต่ำ (Thai) → priority low', async () => {
+  const out = await svc.extract('/task เก็บงานเล็กน้อย !ต่ำ');
+  assert.equal(out[0].priority, 'low');
+});
+
+test('due date in the middle of the text is parsed and removed', async () => {
+  const out = await svc.extract('/task ส่งงาน @2026-09-01 ให้ลูกค้า');
+  assert.equal(out[0].dueDate, '2026-09-01');
+  assert.ok(!out[0].title.includes('@2026'));
+});
+
+test('exactly 60 graphemes is not truncated (no ellipsis at the boundary)', async () => {
+  const exactly60 = 'ก'.repeat(60);
+  const out = await svc.extract(`/task ${exactly60}`);
+  assert.equal(out[0].title, exactly60);
+  assert.ok(!out[0].title.endsWith('…'));
+});
+
+test('blank lines between tasks are ignored', async () => {
+  const out = await svc.extract('/task งานหนึ่ง\n\n   \nงานสอง');
+  assert.equal(out.length, 2);
+  assert.equal(out[0].title, 'งานหนึ่ง');
+  assert.equal(out[1].title, 'งานสอง');
+});
+
+test('description preserves the full line while title may be truncated', async () => {
+  const long = 'ก'.repeat(80);
+  const out = await svc.extract(`/task ${long}`);
+  assert.equal(out[0].description, long);
+  assert.ok(out[0].title.endsWith('…'));
+});

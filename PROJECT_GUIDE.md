@@ -36,7 +36,8 @@ In production every component runs in Docker, and nginx (in the frontend contain
 ### Board operations
 
 - The frontend loads `GET /tasks` once, then stays in sync via Socket.IO events. `task:created` and `task:updated` carry the full task; `tasks:refresh` means "re-fetch everything" and is emitted after drag-and-drop reordering, because multiple cards' positions change at once.
-- Drag and drop calls `PATCH /tasks/:id/move` with `{status, index}`. The repository renumbers positions in the affected columns. A status-only change (`PATCH /tasks/:id/status`) appends to the end of the target column.
+- Drag and drop calls `PATCH /tasks/:id/move` with `{status, index}`. The repository renumbers positions in the affected column. A status-only change (`PATCH /tasks/:id/status`) appends to the end of the target column.
+- All position writes (`createTask`, `move`, `updateStatus`) run inside a transaction (`DatabaseService.withTransaction`) and take a per-column `pg_advisory_xact_lock`. This serializes concurrent writers on the same Kanban column so two simultaneous drags or intakes can never compute the same `position` or interleave a renumber — different columns never block each other.
 - Assignment (`POST /tasks/:id/assign`) upserts the user first when a `displayName` is provided; an unknown user without a display name returns 400 rather than surfacing a foreign-key error as 500.
 - LINE push notifications are fire-and-forget (`void` promises): a LINE API failure never fails the board API call. Cross-column moves notify the group only if the target status is in `NOTIFY_STATUSES`; assignment notices are controlled by `NOTIFY_ASSIGN`.
 
@@ -46,7 +47,7 @@ In production every component runs in Docker, and nginx (in the frontend contain
 |---|---|---|
 | Backend | NestJS 10 (Express), TypeScript | Modules: webhook, tasks, line, realtime, database, health, auth |
 | LINE | `@line/bot-sdk` v11 | Signature validation, reply, push, group member profile |
-| AI | `@anthropic-ai/sdk` | Optional; JSON-schema structured output; default model `claude-opus-4-8` |
+| AI | `@anthropic-ai/sdk` | Optional; JSON-schema structured output; default model `claude-haiku-4-5` (override with `AI_EXTRACT_MODEL`) |
 | Database | PostgreSQL 16, raw SQL via `pg` | No ORM; queries live in repositories |
 | Realtime | Socket.IO (`@nestjs/websockets`) | Single gateway, broadcast to all clients |
 | Frontend | React 18, Vite 5, TypeScript | SPA, no router |
@@ -105,8 +106,9 @@ Adding a column: create a new numbered migration file; never edit an applied one
 ## 6. Security Model
 
 - **Webhook**: protected by LINE's HMAC signature; never put it behind the board password.
-- **Board REST API**: `BoardKeyGuard` compares the `x-board-key` header to `BOARD_PASSWORD`. If `BOARD_PASSWORD` is unset, auth is disabled entirely — acceptable for local development only.
-- **WebSocket**: the gateway disconnects clients whose `handshake.auth.key` does not match the password.
+- **Board REST API**: `BoardKeyGuard` compares the `x-board-key` header to `BOARD_PASSWORD` using a constant-time comparison (`crypto.timingSafeEqual`). If `BOARD_PASSWORD` is unset, auth is disabled entirely — acceptable for local development only.
+- **WebSocket**: the gateway disconnects clients whose `handshake.auth.key` does not match the password (same constant-time comparison).
+- **Rate limiting**: a global `ThrottlerGuard` caps board-API requests per IP (`THROTTLE_LIMIT`/`THROTTLE_TTL_MS`, default 120/min). The webhook and `/health` opt out with `@SkipThrottle()` — the webhook is gated by its HMAC signature and LINE delivers in bursts; `/health` is polled by probes.
 - **CORS**: `CORS_ORIGIN` restricts both REST and WebSocket origins; unset means `*`.
 - **Validation**: a global `ValidationPipe` with `whitelist: true` strips unknown body fields; DTOs in `dto/task.types.ts` define the allowed shapes.
 - `/health` is intentionally unauthenticated for Docker health checks and load balancers.
@@ -136,12 +138,13 @@ cd ../frontend && npm install && npm run dev   # Vite on :5173
 | Suite | Command | Requirements |
 |---|---|---|
 | Backend unit | `cd backend && npm run build && npm test` | None (tests run against `dist/`) — build first |
+| Backend integration | `cd backend && npm run test:integration` | Build first; Postgres up and migrated (`docker compose up -d && npm run migrate`). Covers `position` ordering and concurrency of `createTask`/`move` against a real database |
 | Frontend types/build | `cd frontend && npm run build` | None |
 | End-to-end | `cd frontend && npm run test:e2e` | Backend on `:3000` with `LINE_CHANNEL_SECRET=test_secret`, Postgres up, Vite dev server on `:5173`, Chrome installed |
 
 The e2e script injects a task through the webhook (with a real signature), then drives Chrome through board rendering, realtime updates, drag and drop, and assignment.
 
-CI (`.github/workflows/ci.yml`) runs backend build + unit tests and frontend type-check + build on every push to `main` and every pull request. E2E is not run in CI.
+CI (`.github/workflows/ci.yml`) runs backend build + unit tests + integration tests (against a Postgres service container) and frontend type-check + build on every push to `main` and every pull request. E2E is not run in CI.
 
 ## 9. Conventions
 

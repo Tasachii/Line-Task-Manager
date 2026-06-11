@@ -11,6 +11,22 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: line
+          POSTGRES_PASSWORD: line
+          POSTGRES_DB: line_task_manager
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U line -d line_task_manager"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://line:line@localhost:5432/line_task_manager
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,6 +37,8 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - run: npm run migrate
+      - run: npm run test:integration
 
   frontend:
     runs-on: ubuntu-latest

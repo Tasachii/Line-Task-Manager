@@ -52,7 +52,9 @@ export class TaskExtractionService {
   private anthropic = process.env.ANTHROPIC_API_KEY
     ? new Anthropic({ timeout: 15_000, maxRetries: 1 })
     : null;
-  private aiModel = process.env.AI_EXTRACT_MODEL ?? 'claude-opus-4-8';
+  // Default to Haiku: extraction is a lightweight classify-and-split task, so the cheapest
+  // capable model is the right default. Override with AI_EXTRACT_MODEL for higher accuracy.
+  private aiModel = process.env.AI_EXTRACT_MODEL ?? 'claude-haiku-4-5';
 
   async extract(message: string): Promise<ExtractedTask[]> {
     const trimmed = message.trim();

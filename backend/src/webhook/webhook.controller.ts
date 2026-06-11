@@ -7,10 +7,13 @@ import {
   RawBodyRequest,
 } from '@nestjs/common';
 import { Request } from 'express';
+import { SkipThrottle } from '@nestjs/throttler';
 import { webhook } from '@line/bot-sdk';
 import { LineClientService } from '../line/line-client.service';
 import { WebhookService } from './webhook.service';
 
+// Not rate limited: LINE delivers bursts from its own IPs and the HMAC signature is the gate.
+@SkipThrottle()
 @Controller('webhook')
 export class WebhookController {
   constructor(

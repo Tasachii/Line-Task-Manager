@@ -1,4 +1,5 @@
 import { OnGatewayConnection, WebSocketGateway, WebSocketServer } from '@nestjs/websockets';
+import { timingSafeEqual } from 'crypto';
 import { Server, Socket } from 'socket.io';
 import { Task } from '../tasks/dto/task.types';
 
@@ -8,10 +9,12 @@ export class EventsGateway implements OnGatewayConnection {
   @WebSocketServer()
   server: Server;
 
-  // If BOARD_PASSWORD is set, the client must supply auth.key on connect.
+  // If BOARD_PASSWORD is set, the client must supply a matching auth.key on connect.
   handleConnection(client: Socket) {
     const password = process.env.BOARD_PASSWORD;
-    if (password && client.handshake.auth?.key !== password) {
+    if (!password) return;
+    const key = client.handshake.auth?.key;
+    if (typeof key !== 'string' || !safeEqual(key, password)) {
       client.disconnect(true);
     }
   }
@@ -28,4 +31,12 @@ export class EventsGateway implements OnGatewayConnection {
   tasksReordered() {
     this.server.emit('tasks:refresh');
   }
+}
+
+// Constant-time key comparison (see board-key.guard.ts for rationale).
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  if (ab.length !== bb.length) return false;
+  return timingSafeEqual(ab, bb);
 }

@@ -45,7 +45,8 @@ export class TasksService {
 
   async changeStatus(id: string, status: TaskStatus): Promise<Task> {
     if (!TASK_STATUSES.includes(status)) {
-      throw new NotFoundException(`unknown status: ${status}`);
+      // Invalid status is a bad request (400), not a missing resource (404).
+      throw new BadRequestException(`unknown status: ${status}`);
     }
     const task = await this.repo.updateStatus(id, status);
     if (!task) throw new NotFoundException('task not found');
