@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
+import { AppConfigService } from '../config/app-config.service';
 import { TaskPriority } from './dto/task.types';
 
 export interface ExtractedTask {
@@ -7,6 +8,16 @@ export interface ExtractedTask {
   description: string;
   priority?: TaskPriority;
   dueDate?: string; // YYYY-MM-DD
+}
+
+// Shape of the structured output produced by Claude per EXTRACT_SCHEMA.
+interface ExtractionResult {
+  tasks: {
+    title: string;
+    description: string;
+    priority?: TaskPriority;
+    due_date?: string | null;
+  }[];
 }
 
 // JSON schema for Claude's structured output — enforces this exact response shape.
@@ -46,15 +57,21 @@ const AI_SYSTEM_PROMPT = `คุณคือตัวคัดกรองข้
 @Injectable()
 export class TaskExtractionService {
   private readonly logger = new Logger(TaskExtractionService.name);
-  private keyword = process.env.TASK_KEYWORD ?? '/task';
+  private readonly keyword: string;
 
   // AI extraction is optional — enabled only when ANTHROPIC_API_KEY is set.
-  private anthropic = process.env.ANTHROPIC_API_KEY
-    ? new Anthropic({ timeout: 15_000, maxRetries: 1 })
-    : null;
+  private readonly anthropic: Anthropic | null;
   // Default to Haiku: extraction is a lightweight classify-and-split task, so the cheapest
   // capable model is the right default. Override with AI_EXTRACT_MODEL for higher accuracy.
-  private aiModel = process.env.AI_EXTRACT_MODEL ?? 'claude-haiku-4-5';
+  private readonly aiModel: string;
+
+  constructor(private readonly config: AppConfigService) {
+    this.keyword = this.config.taskKeyword;
+    this.anthropic = this.config.anthropicApiKey
+      ? new Anthropic({ apiKey: this.config.anthropicApiKey, timeout: 15_000, maxRetries: 1 })
+      : null;
+    this.aiModel = this.config.aiExtractModel;
+  }
 
   async extract(message: string): Promise<ExtractedTask[]> {
     const trimmed = message.trim();
@@ -119,12 +136,10 @@ export class TaskExtractionService {
         system: AI_SYSTEM_PROMPT,
         messages: [{ role: 'user', content: message }],
         output_config: { format: { type: 'json_schema', schema: EXTRACT_SCHEMA } },
-      } as Anthropic.MessageCreateParamsNonStreaming);
+      });
 
-      const text = res.content.find((b) => b.type === 'text')?.text ?? '{"tasks":[]}';
-      const parsed = JSON.parse(text) as {
-        tasks: { title: string; description: string; priority?: TaskPriority; due_date?: string | null }[];
-      };
+      const parsed = this.parseExtraction(res);
+      if (!parsed) return [];
       return parsed.tasks.map((t) => ({
         title: this.truncateTitle(t.title),
         description: t.description,
@@ -135,5 +150,18 @@ export class TaskExtractionService {
       this.logger.warn(`AI extract failed (fail-open, skip message): ${(e as Error).message}`);
       return [];
     }
+  }
+
+  // With output_config.format the SDK surfaces the structured result in `parsed_output`;
+  // the assistant turn is not guaranteed to also include a plain text block. Read
+  // `parsed_output` first, then fall back to the first text block for older shapes.
+  private parseExtraction(res: Anthropic.Message): ExtractionResult | null {
+    const fromParsed = (res as { parsed_output?: unknown }).parsed_output;
+    if (fromParsed && typeof fromParsed === 'object') {
+      return fromParsed as ExtractionResult;
+    }
+    const text = res.content.find((b) => b.type === 'text')?.text;
+    if (!text) return null;
+    return JSON.parse(text) as ExtractionResult;
   }
 }

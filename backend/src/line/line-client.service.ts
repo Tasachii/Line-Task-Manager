@@ -1,20 +1,29 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { messagingApi, validateSignature } from '@line/bot-sdk';
+import { AppConfigService } from '../config/app-config.service';
 
 const { MessagingApiClient } = messagingApi;
 
 @Injectable()
 export class LineClientService {
   private readonly logger = new Logger(LineClientService.name);
-  private client = new MessagingApiClient({
-    channelAccessToken: process.env.LINE_CHANNEL_ACCESS_TOKEN ?? '',
-  });
+  private readonly client: messagingApi.MessagingApiClient;
+
+  constructor(private readonly config: AppConfigService) {
+    this.client = new MessagingApiClient({
+      channelAccessToken: this.config.lineChannelAccessToken,
+    });
+  }
 
   // Verifies the request originates from LINE (HMAC-SHA256 over the raw body).
   verifySignature(rawBody: Buffer | string, signature: string | undefined): boolean {
     if (!signature) return false;
+    // An empty/unset secret must never validate any request — otherwise a forged
+    // request crafted against the empty key would pass. Refuse in all environments.
+    const secret = this.config.lineChannelSecret;
+    if (!secret) return false;
     const body = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
-    return validateSignature(body, process.env.LINE_CHANNEL_SECRET ?? '', signature);
+    return validateSignature(body, secret, signature);
   }
 
   // Fetches a group member's display name; returns 'Unknown' on failure to avoid breaking the flow.

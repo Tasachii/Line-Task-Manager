@@ -34,7 +34,9 @@ export class WebhookController {
 
     const body = req.body as { events?: webhook.Event[] };
     // Respond 200 to LINE immediately, then process events asynchronously to prevent LINE retries.
-    void this.webhookService.handleEvents(body.events ?? []);
+    // handleEvents isolates per-event errors internally; the .catch() guards against any
+    // unexpected top-level rejection so a future change can't crash the process.
+    this.webhookService.handleEvents(body.events ?? []).catch(() => {});
     return { ok: true };
   }
 }

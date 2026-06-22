@@ -1,12 +1,14 @@
-// Unit tests for the task extractor — run against built code: npm run build && npm test
+// Unit tests for the task extractor — run from source via tsx: npm test
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 process.env.TASK_KEYWORD = '/task';
 delete process.env.ANTHROPIC_API_KEY; // disable AI — test keyword path only
 
-const { TaskExtractionService } = await import('../dist/tasks/task-extraction.service.js');
-const svc = new TaskExtractionService();
+import { fakeConfig } from './helpers/config.mts';
+
+const { TaskExtractionService } = await import('../src/tasks/task-extraction.service');
+const svc = new TaskExtractionService(fakeConfig());
 
 test('multiple lines produce multiple tasks', async () => {
   const out = await svc.extract('/task แก้ปุ่ม login\nเปลี่ยนสีปุ่ม');

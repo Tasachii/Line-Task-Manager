@@ -4,34 +4,48 @@ import { LineClientService } from '../line/line-client.service';
 import { TasksService } from '../tasks/tasks.service';
 import { TasksRepository } from '../tasks/tasks.repository';
 import { TaskExtractionService } from '../tasks/task-extraction.service';
+import { AppConfigService } from '../config/app-config.service';
 import { NewTaskInput } from '../tasks/dto/task.types';
 
 @Injectable()
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
+  // Bound concurrent event processing so a burst of LINE retries can't spawn unbounded
+  // concurrent AI calls and DB transactions (exhausting the PG pool / Anthropic rate limits).
+  private readonly concurrency: number;
 
   constructor(
     private readonly line: LineClientService,
     private readonly tasks: TasksService,
     private readonly repo: TasksRepository,
     private readonly extractor: TaskExtractionService,
-  ) {}
+    private readonly config: AppConfigService,
+  ) {
+    this.concurrency = this.config.webhookConcurrency;
+  }
 
   async handleEvents(events: webhook.Event[]): Promise<void> {
-    for (const event of events) {
-      try {
-        await this.handleOne(event);
-      } catch (e) {
-        // One failing event must not abort the whole batch.
-        this.logger.error(`handle event failed: ${(e as Error).message}`);
+    // Process events with at most `concurrency` in flight; workers pull from a shared cursor.
+    let cursor = 0;
+    const runWorker = async (): Promise<void> => {
+      while (cursor < events.length) {
+        const event = events[cursor++];
+        try {
+          await this.handleOne(event);
+        } catch (e) {
+          // One failing event must not abort the whole batch.
+          this.logger.error(`handle event failed: ${(e as Error).message}`);
+        }
       }
-    }
+    };
+    const workers = Array.from({ length: Math.min(this.concurrency, events.length) }, runWorker);
+    await Promise.all(workers);
   }
 
   private async handleOne(event: webhook.Event): Promise<void> {
     // Bot was just added to a group — send a greeting and usage instructions.
     if (event.type === 'join' && event.replyToken) {
-      const keyword = process.env.TASK_KEYWORD ?? '/task';
+      const keyword = this.config.taskKeyword;
       await this.line.replyText(
         event.replyToken,
         `สวัสดีครับ ผมคือ Task Manager Bot 🤖\n` +

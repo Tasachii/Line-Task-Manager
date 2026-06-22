@@ -1,27 +1,24 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
-import { timingSafeEqual } from 'crypto';
 import { Request } from 'express';
+import { BoardAuthService } from './board-auth.service';
 
-// Protects the board REST API with a shared password (header: x-board-key).
-// If BOARD_PASSWORD is not set, auth is disabled (dev mode). webhook/health bypass this guard.
-@Injectable()
-export class BoardKeyGuard implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const password = process.env.BOARD_PASSWORD;
-    if (!password) return true;
-
-    const req = ctx.switchToHttp().getRequest<Request>();
-    const provided = req.headers['x-board-key'];
-    if (typeof provided === 'string' && safeEqual(provided, password)) return true;
-    throw new UnauthorizedException('invalid board key');
-  }
+// Request augmented with the group_id the board key resolved to (undefined = all groups).
+export interface BoardRequest extends Request {
+  boardGroupId?: string;
 }
 
-// Constant-time comparison so a wrong key can't be guessed byte-by-byte from response timing.
-// Length is compared first via the buffer sizes; timingSafeEqual requires equal-length inputs.
-function safeEqual(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
+// Protects the board REST API with a board key (header: x-board-key). The key resolves to the
+// group_id it authorizes, which the controller threads into the query so a key for group A can
+// never read group B (A-8/D-3). If no auth is configured, auth is disabled (dev mode).
+@Injectable()
+export class BoardKeyGuard implements CanActivate {
+  constructor(private readonly auth: BoardAuthService) {}
+
+  canActivate(ctx: ExecutionContext): boolean {
+    const req = ctx.switchToHttp().getRequest<BoardRequest>();
+    const result = this.auth.resolve(req.headers['x-board-key']);
+    if (!result.ok) throw new UnauthorizedException('invalid board key');
+    req.boardGroupId = result.groupId;
+    return true;
+  }
 }

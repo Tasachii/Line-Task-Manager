@@ -1,7 +1,9 @@
 import puppeteer from 'puppeteer-core';
 import crypto from 'crypto';
 
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+// Chrome path is env-driven so the script runs on Linux CI as well as macOS dev.
+// On CI set CHROME_PATH to the installed binary (e.g. via browser-actions/setup-chrome).
+const CHROME = process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const APP = 'http://localhost:5173';
 const results = [];
 const ok = (name, pass, detail = '') => {
@@ -25,6 +27,22 @@ function sendWebhook(msgId, text) {
     body,
   });
 }
+
+// Posts a webhook with an explicit signature (used to assert the signature gate rejects forgeries).
+function postWebhook(body, sig) {
+  return fetch('http://localhost:3000/webhook', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-line-signature': sig },
+    body,
+  });
+}
+
+// Signature gate (A-1): a wrong signature must be rejected with 400 and a valid one accepted with 200.
+const sigBody = JSON.stringify({ events: [] });
+const badSig = crypto.createHmac('sha256', 'wrong_secret').update(sigBody).digest('base64');
+const goodSig = crypto.createHmac('sha256', 'test_secret').update(sigBody).digest('base64');
+ok('webhook rejects a forged signature (400)', (await postWebhook(sigBody, badSig)).status === 400);
+ok('webhook accepts a valid signature (200)', (await postWebhook(sigBody, goodSig)).status === 200);
 
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: true });
 try {

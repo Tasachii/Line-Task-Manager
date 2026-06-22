@@ -1,5 +1,6 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnModuleDestroy, Optional } from '@nestjs/common';
 import { Pool, PoolClient, QueryResultRow, types } from 'pg';
+import { AppConfigService } from '../config/app-config.service';
 
 // Parse DATE (OID 1082) as a plain 'YYYY-MM-DD' string to avoid timezone shifts during serialization.
 types.setTypeParser(types.builtins.DATE, (v) => v);
@@ -11,8 +12,11 @@ export type Query = <T extends QueryResultRow = any>(sql: string, params?: any[]
 export class DatabaseService implements OnModuleDestroy {
   private pool: Pool;
 
-  constructor() {
-    this.pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  // @Optional config so the integration tests (which `new DatabaseService()` directly) keep
+  // falling back to process.env.DATABASE_URL; under Nest DI the injected config is used.
+  constructor(@Optional() config?: AppConfigService) {
+    const connectionString = config?.databaseUrl ?? process.env.DATABASE_URL;
+    this.pool = new Pool({ connectionString });
   }
 
   // Thin query helper (auto-checkout from the pool, one statement).

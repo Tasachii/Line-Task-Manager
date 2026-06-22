@@ -1,0 +1,21 @@
+{
+  "all": true,
+  "src": ["src"],
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "test/**",
+    "dist/**",
+    "src/**/*.module.ts",
+    "src/main.ts",
+    "src/database/migrate.ts",
+    "src/database/database.service.ts",
+    "src/tasks/tasks.repository.ts",
+    "src/tasks/tasks.service.ts",
+    "src/tasks/tasks.controller.ts",
+    "src/health/health.controller.ts"
+  ],
+  "reporter": ["text", "lcov"],
+  "lines": 80,
+  "functions": 80,
+  "branches": 70
+}

@@ -69,7 +69,15 @@ export class TasksRepository {
     FROM tasks t
     LEFT JOIN users u ON u.id = t.assignee_id`;
 
-  async findAll(): Promise<Task[]> {
+  // Scoped to a single group when groupId is provided (per-group board isolation, A-8/D-3);
+  // returns every group's tasks only when groupId is undefined (single-tenant / dev mode).
+  async findAll(groupId?: string): Promise<Task[]> {
+    if (groupId !== undefined) {
+      return this.db.query<Task>(
+        `${this.selectSql} WHERE t.group_id = $1 ORDER BY t.status, t.position, t.created_at`,
+        [groupId],
+      );
+    }
     return this.db.query<Task>(`${this.selectSql} ORDER BY t.status, t.position, t.created_at`);
   }
 

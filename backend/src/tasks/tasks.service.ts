@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { TasksRepository } from './tasks.repository';
 import { EventsGateway } from '../realtime/events.gateway';
 import { LineClientService } from '../line/line-client.service';
+import { AppConfigService } from '../config/app-config.service';
 import { NewTaskInput, Task, TaskStatus, TASK_STATUSES } from './dto/task.types';
 
 // Thai status labels used in LINE group notification messages.
@@ -15,19 +16,23 @@ const STATUS_LABELS: Record<TaskStatus, string> = {
 @Injectable()
 export class TasksService {
   // Configurable set of statuses that trigger a group notification (reduces spam and OA quota usage).
-  private notifyStatuses = new Set(
-    (process.env.NOTIFY_STATUSES ?? 'todo,in_process,test,done')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
-  private notifyAssign = (process.env.NOTIFY_ASSIGN ?? 'true') !== 'false';
+  private readonly notifyStatuses: Set<string>;
+  private readonly notifyAssign: boolean;
 
   constructor(
     private readonly repo: TasksRepository,
     private readonly events: EventsGateway,
     private readonly line: LineClientService,
-  ) {}
+    private readonly config: AppConfigService,
+  ) {
+    this.notifyStatuses = new Set(
+      this.config.notifyStatuses
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    );
+    this.notifyAssign = this.config.notifyAssign;
+  }
 
   async createMany(inputs: NewTaskInput[]): Promise<Task[]> {
     const created: Task[] = [];
@@ -39,8 +44,9 @@ export class TasksService {
     return created;
   }
 
-  findAll(): Promise<Task[]> {
-    return this.repo.findAll();
+  // groupId scopes the read to one group (per-group board isolation); undefined returns all groups.
+  findAll(groupId?: string): Promise<Task[]> {
+    return this.repo.findAll(groupId);
   }
 
   async changeStatus(id: string, status: TaskStatus): Promise<Task> {
@@ -64,7 +70,7 @@ export class TasksService {
     if (!task) throw new NotFoundException('task not found');
 
     // Other cards in the column also shift positions — broadcast refresh so all clients re-fetch order.
-    this.events.tasksReordered();
+    this.events.tasksReordered(task.group_id);
     if (before.status !== status) this.notifyStatusChange(task, status);
     return task;
   }

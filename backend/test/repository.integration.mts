@@ -1,8 +1,8 @@
 // Integration tests for TasksRepository — exercise the real PostgreSQL path, focusing on the
 // transaction + advisory-lock changes that protect card `position` ordering under concurrency.
 //
-// Requires a reachable database. Run after building:
-//   docker compose up -d && npm run build && npm run migrate && npm run test:integration
+// Requires a reachable database. Run from source via tsx:
+//   docker compose up -d && npm run migrate && npm run test:integration
 // DATABASE_URL defaults to the docker-compose dev database.
 import 'reflect-metadata';
 import test, { before, after } from 'node:test';
@@ -11,8 +11,8 @@ import assert from 'node:assert/strict';
 process.env.DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgres://line:line@localhost:5432/line_task_manager';
 
-const { DatabaseService } = await import('../dist/database/database.service.js');
-const { TasksRepository } = await import('../dist/tasks/tasks.repository.js');
+const { DatabaseService } = await import('../src/database/database.service');
+const { TasksRepository } = await import('../src/tasks/tasks.repository');
 
 const db = new DatabaseService();
 const repo = new TasksRepository(db);
@@ -89,4 +89,43 @@ test('concurrent moves into one column keep positions distinct and contiguous', 
   const positions = done.map((t) => t.position);
   assert.equal(new Set(positions).size, positions.length, 'positions must be distinct');
   done.forEach((t, i) => assert.equal(t.position, i, 'positions must be contiguous 0..n-1'));
+});
+
+// Dedupe at the DB layer (A-2 complement / C3): saving the same messageId twice must not error
+// (ON CONFLICT DO NOTHING) and messageExists must report it present.
+test('saveMessage is idempotent on duplicate messageId (ON CONFLICT DO NOTHING)', async () => {
+  const dupId = `dup_${RUN}`;
+  await repo.saveMessage(dupId, groupId, userId, 'first');
+  await repo.saveMessage(dupId, groupId, userId, 'second'); // must not throw
+  assert.equal(await repo.messageExists(dupId), true);
+  await db.query('DELETE FROM line_messages WHERE message_id = $1', [dupId]);
+});
+
+// A-8 / D-3 — per-group isolation. findAll(groupId) must return only that group's rows so a
+// client holding group A's board key can never read group B's tasks (the data-leak fix).
+test('findAll(groupId) is scoped to that group only (A-8 / D-3)', async () => {
+  const groupA = `gA_${RUN}`;
+  const groupB = `gB_${RUN}`;
+  const msgA = `mA_${RUN}`;
+  const msgB = `mB_${RUN}`;
+  await repo.saveMessage(msgA, groupA, userId, 'seed A');
+  await repo.saveMessage(msgB, groupB, userId, 'seed B');
+  await repo.createTask({ title: 'A task', description: 'A', groupId: groupA, sourceMessageId: msgA, createdBy: userId });
+  await repo.createTask({ title: 'B task', description: 'B', groupId: groupB, sourceMessageId: msgB, createdBy: userId });
+
+  const onlyA = await repo.findAll(groupA);
+  assert.ok(onlyA.length >= 1, 'findAll(groupA) returns group A rows');
+  assert.ok(onlyA.every((t) => t.group_id === groupA), 'findAll(groupA) must return only group A tasks');
+
+  const onlyB = await repo.findAll(groupB);
+  assert.ok(onlyB.every((t) => t.group_id === groupB), 'findAll(groupB) must return only group B tasks');
+  assert.equal(onlyB.some((t) => t.group_id === groupA), false, 'group B key cannot read group A');
+
+  // findAll() with no argument still returns all groups (single-tenant / dev mode).
+  const all = await repo.findAll();
+  assert.ok(all.some((t) => t.group_id === groupA) && all.some((t) => t.group_id === groupB),
+    'findAll() returns every group');
+
+  await db.query('DELETE FROM tasks WHERE group_id = ANY($1)', [[groupA, groupB]]);
+  await db.query('DELETE FROM line_messages WHERE message_id = ANY($1)', [[msgA, msgB]]);
 });
