@@ -44,7 +44,12 @@ const goodSig = crypto.createHmac('sha256', 'test_secret').update(sigBody).diges
 ok('webhook rejects a forged signature (400)', (await postWebhook(sigBody, badSig)).status === 400);
 ok('webhook accepts a valid signature (200)', (await postWebhook(sigBody, goodSig)).status === 200);
 
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: true });
+const browser = await puppeteer.launch({
+  executablePath: CHROME,
+  headless: true,
+  // Flags required to launch Chrome in a sandboxed CI runner (GitHub Actions).
+  args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+});
 try {
   const pageA = await browser.newPage();
   const errorsA = [];
