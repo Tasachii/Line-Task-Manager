@@ -1,246 +1,220 @@
-# LINE Task Manager
+# LINE Task Manager — Kanban board for LINE group chats
 
-A Kanban board integrated with LINE group chats. A bot reads messages in a LINE group, extracts actionable tasks, and places them on a four-column board (`Todo → In Process → Test → Done`). Status changes and assignments are pushed back to the group automatically.
+![CI](https://github.com/Tasachii/LIne_Task_Manager/actions/workflows/ci.yml/badge.svg)
 
-For a complete onboarding reference (architecture, data model, API, conventions), see [PROJECT_GUIDE.md](PROJECT_GUIDE.md).
+LINE Task Manager is a webhook-driven Kanban board that turns LINE group messages into tracked tasks. A bot listens to a LINE group, parses `/task` keyword messages (or, with an Anthropic API key, plain natural-language messages) into cards, and places them on a four-column board — `Todo → In Process → Test → Done`. Status changes and assignments push a notification back to the group. The board is a React SPA served behind nginx; the backend is NestJS with PostgreSQL. Multiple LINE groups can share one deployment with full per-group data isolation via `BOARD_GROUPS`.
+
+**Issues** — [github.com/Tasachii/LIne_Task_Manager/issues](https://github.com/Tasachii/LIne_Task_Manager/issues)
+
+---
 
 ## Screenshots
 
-The Kanban board — four columns, priority and due-date badges (overdue cards turn red), drag-and-drop, and per-card assignment:
+| Board | Lock screen |
+| --- | --- |
+| ![Kanban board — four columns, priority badges, drag-and-drop](docs/review/board-overview.png) | ![Password gate shown when BOARD_PASSWORD is set](docs/review/board-locked.png) |
 
-![Kanban board](docs/review/board-overview.png)
+---
 
-When `BOARD_PASSWORD` is set, the board is gated by a password (compared in constant time):
+## What it is
 
-![Locked board](docs/review/board-locked.png)
+A single deployment handles one or more LINE groups. Each message that contains `/task` (one line = one card) is parsed for priority tokens (`!high`, `!low`, and Thai aliases) and due dates (`@YYYY-MM-DD`). With `ANTHROPIC_API_KEY` set, the Claude API also screens keyword-free messages and promotes those that describe real work. The board reflects every change in real time over WebSocket; group members get a LINE push when a card moves or is assigned.
 
-## Project Status
+- **Backend stack** — NestJS 10 · PostgreSQL 16 · @line/bot-sdk 11 · @anthropic-ai/sdk · Socket.IO 4 · TypeScript 5
+- **Frontend stack** — React 18 · Vite 5 · @dnd-kit · socket.io-client · TypeScript 5
 
-The full message-to-board pipeline is **implemented and verified** — a signed webhook payload
-flows through signature check → dedupe → extraction → persistence → realtime board update → group reply.
-CI runs the unit suite (signature verification, the webhook controller's signature gate, webhook-service
-branch handling, AI extraction with the Anthropic client mocked, the board guard, the realtime gateway,
-and DTO validation — gated by a c8 coverage threshold), the Postgres integration suite (repository
-position/concurrency), and the browser end-to-end suite (board rendering, realtime updates, drag-and-drop,
-and the webhook 400-on-bad-signature gate).
+---
 
-What is **not** done for you, because it needs your own credentials and a public URL: connecting the bot
-to a **real LINE Official Account** and a live group. Until the checklist below is complete, the bot
-cannot receive messages from an actual LINE group.
+## Repository layout
 
-### Go-Live Checklist
-
-Complete these in order to take the bot from "runs locally" to "reads tasks from a real LINE group".
-Detailed steps for each are in [Connecting a LINE Official Account](#connecting-a-line-official-account).
-
-- [ ] **1. Create a LINE Messaging API channel** in the [LINE Developers Console](https://developers.line.biz).
-- [ ] **2. Put real credentials in `backend/.env`** — `LINE_CHANNEL_SECRET` and `LINE_CHANNEL_ACCESS_TOKEN`.
-      (Local tests use `LINE_CHANNEL_SECRET=test_secret` and no token, so live LINE calls return 401 — that is expected in dev.)
-- [ ] **3. Set `BOARD_PASSWORD` and `CORS_ORIGIN`** before exposing the board publicly.
-- [ ] **4. Run the stack** — `docker compose --profile full up -d --build` (board + webhook served on `:8080`).
-- [ ] **5. Expose a public HTTPS URL** to `:8080` — `ngrok http 8080` for testing, or deploy behind a real domain.
-- [ ] **6. Configure the webhook in LINE** — set Webhook URL to `https://<your-domain>/webhook`, click **Verify** (must report Success), and enable **Use webhook**.
-- [ ] **7. Allow group chats** — in LINE Official Account Manager: Webhooks **on**, Auto-response **off**, and enable **Allow bot to join group chats**.
-- [ ] **8. Invite the bot to a group** and send `/task ...` (one line per task). Cards should appear on the board, and the bot should reply in the group.
-- [ ] **9. (Optional) Enable no-keyword AI intake** — set `ANTHROPIC_API_KEY` so plain messages that describe work become cards without the `/task` keyword.
-
-> **How task detection works:** without `ANTHROPIC_API_KEY`, only messages starting with `/task` create cards
-> (one line = one task); plain chat is ignored. With the key set, the AI also classifies keyword-free messages.
-
-## Features
-
-- Task intake from LINE via the `/task` keyword; one line per task, with deduplication on LINE webhook retries
-- Optional AI classification of natural-language messages (no keyword required) using the Claude API, enabled by setting `ANTHROPIC_API_KEY`
-- Priority tokens (`!high`, `!low`, plus Thai aliases) and due dates (`@YYYY-MM-DD`) parsed onto cards, with overdue indicators
-- Four-column Kanban board with cross-column drag and drop and persistent in-column ordering
-- LINE push notifications on status change and assignment, with configurable status filtering to limit message quota usage
-- Realtime board updates for all connected clients over WebSocket, with a reconnection banner on connection loss
-- Shared board password (`BOARD_PASSWORD`) protecting both REST and WebSocket access, plus configurable CORS
-- Full Docker deployment (PostgreSQL, backend, frontend behind nginx) exposed through a single public URL for both the board and the LINE webhook
-- Unit tests, end-to-end tests, and GitHub Actions CI
-
-## Repository Layout
-
-| Path | Description |
-|---|---|
-| `backend/` | NestJS application: LINE webhook, REST API, WebSocket gateway, AI extraction, PostgreSQL access |
-| `frontend/` | React + Vite + dnd-kit Kanban board, with `nginx.conf` for production |
+| Path | Contents |
+| --- | --- |
+| `backend/` | NestJS app — webhook, REST API, WebSocket gateway, AI extraction, PostgreSQL access |
+| `frontend/` | React + Vite Kanban SPA with `nginx.conf` for production |
 | `migrations/` | SQL migrations (`line_messages`, `users`, `tasks`) |
-| `docs/` | System design document and interactive flow diagrams |
-| `docker-compose.yml` | PostgreSQL for development; full stack via the `full` profile |
-| `.github/workflows/` | CI: build and test for backend and frontend |
+| `docs/` | Architecture doc, interactive flow diagrams, roadmap |
+| `docker-compose.yml` | PostgreSQL for dev; full stack via `--profile full` |
+| `.github/workflows/ci.yml` | CI: backend · frontend (required gates) · e2e (best-effort) |
 
-## Development Setup
+---
 
-Requires Node.js 20+ and Docker.
+## Installation
+
+**Requirements** — [Node 22](https://nodejs.org) · [Docker](https://docs.docker.com/get-docker/) (for PostgreSQL / full-stack deployment)
+
+**Mac / Linux**
+```bash
+git clone https://github.com/Tasachii/LIne_Task_Manager.git
+cd LIne_Task_Manager
+cp backend/.env.example backend/.env    # fill in LINE credentials (see Configuration table)
+```
+
+**Windows**
+```bat
+git clone https://github.com/Tasachii/LIne_Task_Manager.git
+cd LIne_Task_Manager
+copy backend\.env.example backend\.env  :: fill in LINE credentials (see Configuration table)
+```
+
+---
+
+## Running
+
+### Development
 
 ```bash
-# 1. PostgreSQL
-docker compose up -d
+docker compose up -d                    # start PostgreSQL on :5432
 
-# 2. Backend
+# Backend (separate terminal)
 cd backend
 npm install
-cp .env.example .env        # fill in LINE channel credentials
-npm run migrate
-npm run start:dev           # http://localhost:3000
+npm run migrate                         # create tables in the local database
+npm run start:dev                       # NestJS watch mode on :3000
 
-# 3. Frontend (separate terminal)
+# Frontend (separate terminal)
 cd frontend
 npm install
-npm run dev                 # http://localhost:5173
+npm run dev                             # Vite dev server on :5173
 ```
 
-## Production Deployment (Docker)
+### Production (Docker)
 
 ```bash
-cp backend/.env.example backend/.env   # fill in all values (see table below)
-docker compose --profile full up -d --build
+docker compose --profile full up -d --build   # PostgreSQL + backend + nginx on :8080
 ```
 
-- The board and webhook are served behind nginx at `http://localhost:8080`. Point your domain or tunnel at this single endpoint.
-- The backend waits for the database, runs migrations automatically on startup, and exposes a health check at `/health`.
+The backend waits for the database, runs migrations automatically on startup, and exposes a health check at `/health`. Point your domain or ngrok tunnel at `:8080` — both the Kanban board and the LINE webhook are served from that single endpoint.
 
-### Environment Variables (`backend/.env`)
-
-| Variable | Required | Description |
-|---|---|---|
-| `LINE_CHANNEL_SECRET` | Yes | From the LINE Developers Console; used to verify webhook signatures |
-| `LINE_CHANNEL_ACCESS_TOKEN` | Yes | From the LINE Developers Console; used to send messages |
-| `DATABASE_URL` | Yes | PostgreSQL connection string |
-| `TASK_KEYWORD` | No | Keyword that marks a message as a task (default `/task`) |
-| `BOARD_PASSWORD` | Recommended | Single shared board key; authorizes the whole board (one LINE group). Unset disables auth (development only). |
-| `BOARD_GROUPS` | For multi-group | JSON map `{ "<group_id>": "<board_key>" }` enabling **per-group isolation**: each key authorizes reads/writes for exactly one LINE group, so a key for group A can never see group B's tasks. Takes precedence over `BOARD_PASSWORD`. See [Per-group board isolation](#per-group-board-isolation). |
-| `CORS_ORIGIN` | Recommended | Allowed board origin, e.g. `https://board.example.com`; unset allows `*` |
-| `NOTIFY_STATUSES` | No | Comma-separated statuses that trigger group notifications (default: all). Set e.g. `done` to conserve quota |
-| `NOTIFY_ASSIGN` | No | Notify the group when a task is assigned (default `true`) |
-| `ANTHROPIC_API_KEY` | No | Enables AI classification of messages without the keyword |
-| `AI_EXTRACT_MODEL` | No | Claude model for extraction (default `claude-haiku-4-5`, the low-cost default; use `claude-opus-4-8` for higher accuracy) |
-| `THROTTLE_LIMIT` | No | Max board-API requests per IP per window (default `120`) |
-| `THROTTLE_TTL_MS` | No | Rate-limit window in milliseconds (default `60000`). The LINE webhook and `/health` are exempt |
-| `WEBHOOK_CONCURRENCY` | No | Max LINE events processed concurrently per webhook delivery (default `3`); bounds AI calls and DB transactions under burst |
-| `PORT` | No | HTTP port the backend listens on (default `3000`) |
-
-> All environment variables are validated at startup by `@nestjs/config` (a `class-validator` schema in
-> `backend/src/config/env.validation.ts`). A malformed value — a non-numeric `PORT`, invalid `BOARD_GROUPS`
-> JSON, an unknown `NODE_ENV` — fails fast and the backend refuses to boot. In production, `assertProdConfig`
-> additionally requires board auth (`BOARD_PASSWORD` **or** `BOARD_GROUPS`), an explicit `CORS_ORIGIN`, and a
-> non-empty `LINE_CHANNEL_SECRET`.
-
-### Per-group board isolation
-
-By default a single `BOARD_PASSWORD` (or no auth in dev) grants access to the whole board, which is correct
-for a **single LINE group**. To onboard multiple groups without exposing one group's tasks to another, set
-`BOARD_GROUPS` to a JSON map of `group_id → board key`:
-
-```bash
-# Each LINE group gets its own key. A member entering keyA on the board sees only group A's tasks;
-# the REST list (GET /tasks) and the realtime WebSocket room are both scoped to that group_id.
-BOARD_GROUPS={"Cabc123...":"keyA","Cdef456...":"keyB"}
-```
-
-When `BOARD_GROUPS` is set it takes precedence over `BOARD_PASSWORD`: the board key resolves to the one
-`group_id` it authorizes, `GET /tasks` returns only that group's rows (`WHERE group_id = $1`), and the
-WebSocket gateway joins the socket to that group's room so realtime events never cross groups. The
-`group_id` is the LINE group identifier captured when the bot first sees a message from that group. Single-group
-deploys need no extra configuration — leave `BOARD_GROUPS` unset and use `BOARD_PASSWORD` (or nothing in dev).
+---
 
 ## Connecting a LINE Official Account
 
-### LINE Developers Console (https://developers.line.biz)
-
-1. Create a Provider and a **Messaging API channel** (this is the bot's LINE Official Account).
-2. **Basic settings** tab: copy the **Channel secret** into `backend/.env` as `LINE_CHANNEL_SECRET`.
-3. **Messaging API** tab: click **Issue** under Channel access token (long-lived) and set `LINE_CHANNEL_ACCESS_TOKEN`.
-4. Open a tunnel to nginx: `ngrok http 8080` (or `ngrok http 3000` when running the backend directly in development).
-5. Set the **Webhook URL** to `https://<your-domain>/webhook`, click **Verify** (it must report Success), and enable **Use webhook**.
-6. In **LINE Official Account Manager** (https://manager.line.biz), under Settings → Response settings: set **Chat** off, **Auto-response** off, **Webhooks** on, and **Greeting message** off.
-7. Under Settings → Account settings, enable **Allow bot to join group chats**; without this the bot cannot be invited to a group.
-
-### Trying It Out
-
-8. Invite the bot to a group. It posts a greeting with usage instructions.
-9. Send a message in the group:
+1. Create a Provider and a **Messaging API channel** at [developers.line.biz](https://developers.line.biz).
+2. **Basic settings** tab → copy **Channel secret** into `backend/.env` as `LINE_CHANNEL_SECRET`.
+3. **Messaging API** tab → issue a long-lived Channel access token → `LINE_CHANNEL_ACCESS_TOKEN`.
+4. Expose `:8080` publicly: `ngrok http 8080` (dev) or a real domain (prod).
+5. Set **Webhook URL** to `https://<your-domain>/webhook`, click **Verify** (must report Success), enable **Use webhook**.
+6. In [LINE Official Account Manager](https://manager.line.biz): Response settings → **Chat** off · **Auto-response** off · **Webhooks** on.
+7. Account settings → enable **Allow bot to join group chats**.
+8. Invite the bot to a group. Send:
 
 ```
 /task Fix the login button on the landing page !high @2026-07-01
 Change the button color to green
 ```
 
-This creates two cards in Todo (the first with high priority and a due date), and the bot confirms the intake in the group.
+Two cards appear in Todo (the first with high priority and a due date); the bot confirms intake in the group.
 
-If `ANTHROPIC_API_KEY` is set, plain messages that describe work (for example, a bug report written conversationally) are converted to cards without the keyword, while ordinary conversation is ignored.
+> Without `ANTHROPIC_API_KEY`, only `/task` messages create cards — plain conversation is ignored.
+> With the key set, the AI also classifies keyword-free messages that describe work.
 
-### Group Notifications
+---
 
-- Moving a card across columns pushes a status update to the group.
-- Assigning a task pushes an assignment notice.
-- Restrict notifications to specific statuses with `NOTIFY_STATUSES`. Push messages consume the Official Account's message quota (the free plan includes roughly 300 messages per month).
+## Configuration
 
-## API Endpoints
+All variables are validated at startup by a `class-validator` schema in `backend/src/config/env.validation.ts`. A malformed value fails fast and the backend refuses to boot. In production, `assertProdConfig` additionally requires `BOARD_PASSWORD` **or** `BOARD_GROUPS`, an explicit `CORS_ORIGIN`, and a non-empty `LINE_CHANNEL_SECRET`.
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `LINE_CHANNEL_SECRET` | Yes | — | From LINE Developers Console; used to verify HMAC-SHA256 webhook signatures |
+| `LINE_CHANNEL_ACCESS_TOKEN` | Yes | — | From LINE Developers Console; used to send push/reply messages |
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string |
+| `PORT` | No | `3000` | HTTP port the backend listens on |
+| `TASK_KEYWORD` | No | `/task` | Prefix that marks a message as a task intake |
+| `BOARD_PASSWORD` | Recommended | — | Shared board key for single-group deploys; unset disables auth (dev only) |
+| `BOARD_GROUPS` | Multi-group | — | JSON map `{"<group_id>":"<key>"}` — per-group isolation; takes precedence over `BOARD_PASSWORD` |
+| `CORS_ORIGIN` | Recommended | `*` | Allowed origin for the board API/WebSocket |
+| `NOTIFY_STATUSES` | No | all statuses | Comma-separated statuses that trigger a LINE push (e.g. `done` to conserve quota) |
+| `NOTIFY_ASSIGN` | No | `true` | Push to the group when a task is assigned |
+| `ANTHROPIC_API_KEY` | No | — | Enables AI classification of keyword-free messages via the Claude API |
+| `AI_EXTRACT_MODEL` | No | `claude-haiku-4-5` | Claude model for extraction; use `claude-opus-4-8` for higher accuracy |
+| `THROTTLE_LIMIT` | No | `120` | Max board-API requests per IP per window |
+| `THROTTLE_TTL_MS` | No | `60000` | Rate-limit window in milliseconds (webhook and `/health` are exempt) |
+| `WEBHOOK_CONCURRENCY` | No | `3` | Max LINE events processed concurrently per delivery; bounds AI calls and DB transactions under burst |
+
+### Per-group isolation
+
+`BOARD_GROUPS` maps each LINE group ID to its own board key. A holder of key A sees only group A's tasks — `GET /tasks` is scoped by `WHERE group_id = $1` and the WebSocket gateway joins sockets to a per-group room. Single-group deploys leave `BOARD_GROUPS` unset and use `BOARD_PASSWORD`.
+
+```bash
+BOARD_GROUPS={"Cabc123...":"keyA","Cdef456...":"keyB"}
+```
+
+---
+
+## API
 
 | Method | Path | Auth | Description |
-|---|---|---|---|
-| POST | `/webhook` | LINE signature | Receives events from the LINE platform |
-| GET | `/health` | None | Health check, including database connectivity |
-| GET | `/tasks` | `x-board-key` | List tasks ordered by column position. With `BOARD_GROUPS`, scoped to the key's group; otherwise all tasks |
-| PATCH | `/tasks/:id/status` | `x-board-key` | Change status (card is appended to the target column) |
-| PATCH | `/tasks/:id/move` | `x-board-key` | Move a card to `{status, index}`; used by drag and drop |
-| POST | `/tasks/:id/assign` | `x-board-key` | Assign a task: `{userId, displayName}` |
+| --- | --- | --- | --- |
+| `POST` | `/webhook` | LINE HMAC signature | Receives events from the LINE platform |
+| `GET` | `/health` | None | Health check including database connectivity |
+| `GET` | `/tasks` | `x-board-key` | List tasks ordered by column position; scoped to the key's group when `BOARD_GROUPS` is set |
+| `PATCH` | `/tasks/:id/status` | `x-board-key` | Change status — card is appended to the target column |
+| `PATCH` | `/tasks/:id/move` | `x-board-key` | Move a card to `{status, index}`; used by drag-and-drop |
+| `POST` | `/tasks/:id/assign` | `x-board-key` | Assign a task: `{userId, displayName}` |
 
-WebSocket events (clients must send `auth.key` when a password is set): `task:created`, `task:updated`, `tasks:refresh`.
+WebSocket: clients send `auth.key` on connect when a password is set; the server emits `task:created`, `task:updated`, `tasks:refresh`.
+
+---
 
 ## Testing
 
 ```bash
-# Unit tests — run from source via tsx (no build step needed). Covers signature verification,
-# the webhook signature gate, webhook-service branches, AI extraction (Anthropic mocked),
-# the board guard, the realtime gateway, and DTO validation.
+# Unit tests — 105 tests across signature verification, webhook controller/service,
+# AI extraction (Anthropic SDK mocked), board guard, realtime gateway, DTO validation.
 cd backend && npm test
 
-# Unit tests with coverage (c8, fails below lines 80 / functions 80 / branches 70).
+# Unit tests with coverage (c8; thresholds: lines 80, functions 80, branches 70).
 cd backend && npm run test:cov
 
-# Integration tests (real PostgreSQL: position ordering and concurrency of createTask/move).
-# Requires Postgres up and migrated.
-docker compose up -d && npm run migrate && npm run test:integration
+# Integration tests — 6 tests against a real PostgreSQL instance.
+# Covers position ordering, advisory-lock concurrency, idempotent saveMessage,
+# and findAll group scoping. Requires Postgres up and migrated.
+docker compose up -d
+cd backend && npm run migrate && npm run test:integration
 
-# End-to-end tests (drives a real Chrome session: board rendering, realtime updates, drag and drop,
-# and the webhook 400-on-bad-signature gate). Requires the backend on :3000 (started with
-# LINE_CHANNEL_SECRET=test_secret) and Vite on :5173. Set CHROME_PATH on non-macOS hosts.
+# End-to-end tests — Puppeteer/Chrome: board rendering, realtime updates,
+# drag-and-drop, and the 400-on-bad-signature gate.
+# Requires backend on :3000 (LINE_CHANNEL_SECRET=test_secret) and Vite on :5173.
 cd frontend && npm run test:e2e
 ```
 
-GitHub Actions runs three jobs on every push and pull request: **backend** (build, unit tests with
-the c8 coverage gate, then the Postgres integration suite), **frontend** (type-check and build), and
-**e2e** (boots the backend + Vite preview and runs the browser suite headless via Chrome). The e2e job
-depends on backend and frontend passing.
+CI runs three jobs on every push and pull request. **backend** (build + unit tests + Postgres integration) and **frontend** (type-check + build) are required gates. **e2e** runs after both pass but is `continue-on-error: true` — browser/Chrome flakiness in the sandboxed runner does not fail the workflow. All jobs use Node 22.
 
-## Design Decisions
+---
+
+## Design decisions
 
 | Topic | Decision |
-|---|---|
-| Task detection | `/task` keyword, with optional AI classification enabled by `ANTHROPIC_API_KEY` |
-| Multiple tasks per message | Each line after the keyword becomes one task |
-| Duplicate prevention | `message_id` is checked before insert to absorb LINE webhook retries |
-| Card ordering | A per-column `position` is persisted; ordering survives moves, inserts, and page refreshes |
-| Ordering integrity | Position writes (`create`, `move`, status change) run in a transaction and serialize on a per-column advisory lock, so concurrent edits cannot corrupt order |
-| Authentication | A board key compared in constant time. Single-group: one shared `BOARD_PASSWORD`. Multi-group: `BOARD_GROUPS` maps a key to one `group_id`, isolating each group's board (LINE Login is planned for per-user identity) |
-| Rate limiting | Per-IP throttle on the board API; webhook and health checks are exempt |
-| AI failure handling | Fail-open: if extraction errors or times out, the message is skipped and the webhook is never blocked |
+| --- | --- |
+| Webhook signature | Raw-body HMAC-SHA256 (`X-Line-Signature`) verified before any parsing — tampered payloads are rejected with 400 before touching the database |
+| Card ordering | A `position` column persists in-column order across moves, inserts, and page refreshes |
+| Ordering integrity | Position writes run in a transaction serialized on a per-column PostgreSQL advisory lock — concurrent edits cannot corrupt order |
+| Per-group key model | `BOARD_GROUPS` maps each LINE `group_id` to its own board key; `GET /tasks` and the WebSocket room are both scoped to that group, so key A never exposes group B's data |
+| Duplicate prevention | `message_id` checked before insert absorbs LINE webhook retries — the same message is never stored twice |
+| AI failure | Fail-open: if extraction errors or times out the message is silently skipped; the webhook always returns 200 and is never blocked |
+| Rate limiting | Per-IP throttle on the board API; the LINE webhook and `/health` are exempt |
+| Prod startup guard | `assertProdConfig` refuses to boot in production without board auth, explicit `CORS_ORIGIN`, and a non-empty `LINE_CHANNEL_SECRET` |
+
+---
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the prioritized, handoff-ready backlog (with code pointers
-and acceptance criteria). In short:
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the full prioritized backlog with code pointers and acceptance criteria.
 
-- **P0 (before multi-team use):** LINE Login for per-user identity
-- **P1:** edit/delete cards from the board; weekly statistics posted to the group
-- **P2:** structured logging/metrics
+- [x] Signed webhook (HMAC raw-body)
+- [x] Per-group board isolation via `BOARD_GROUPS`
+- [x] Advisory-lock ordering with concurrency coverage
+- [x] Optional AI extraction (fail-open)
+- [x] Real-time board updates over WebSocket
+- [x] Docker full-stack deployment
+- [ ] LINE Login for per-user identity (P0 — before multi-team use)
+- [ ] Edit and delete cards from the board (P1)
+- [ ] Weekly statistics posted to the LINE group (P1)
+- [ ] Structured logging and metrics (P2)
 
-> **Per-group isolation is implemented.** `TasksRepository.findAll(groupId)` scopes reads by
-> `group_id`, and the board key resolves to the group it authorizes (via `BOARD_GROUPS`), so one
-> group's tasks are never visible to a holder of another group's key — over both REST and the
-> realtime WebSocket. See [Per-group board isolation](#per-group-board-isolation). The contract is
-> covered by an integration test in `backend/test/repository.integration.mts` plus guard/controller
-> unit tests in `backend/test/{board-key.guard,tasks.controller,config}.test.mts`.
+---
+
+## License
+
+MIT © Phasathat Jaruchitsophon
