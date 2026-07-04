@@ -37,7 +37,10 @@ export class TasksService {
   async createMany(inputs: NewTaskInput[]): Promise<Task[]> {
     const created: Task[] = [];
     for (const input of inputs) {
-      const task = await this.repo.createTask(input);
+      // Under per-group isolation, keep each group's column contiguous so the group-scoped
+      // board (which drags against a group-relative index) stays consistent with the DB.
+      const scope = this.config.perGroupAuthEnabled ? input.groupId : undefined;
+      const task = await this.repo.createTask(input, scope);
       this.events.taskCreated(task); // realtime broadcast
       created.push(task);
     }
@@ -49,12 +52,14 @@ export class TasksService {
     return this.repo.findAll(groupId);
   }
 
-  async changeStatus(id: string, status: TaskStatus): Promise<Task> {
+  // groupId (from the board key) scopes the write so a per-group caller can only mutate its own
+  // group's tasks; a cross-group id resolves to null → NotFoundException (404).
+  async changeStatus(id: string, status: TaskStatus, groupId?: string): Promise<Task> {
     if (!TASK_STATUSES.includes(status)) {
       // Invalid status is a bad request (400), not a missing resource (404).
       throw new BadRequestException(`unknown status: ${status}`);
     }
-    const task = await this.repo.updateStatus(id, status);
+    const task = await this.repo.updateStatus(id, status, groupId);
     if (!task) throw new NotFoundException('task not found');
     this.events.taskUpdated(task);
     this.notifyStatusChange(task, status);
@@ -62,11 +67,12 @@ export class TasksService {
   }
 
   // Drag card: changes both column and order — notifies LINE only on cross-column moves.
-  async move(id: string, status: TaskStatus, index: number): Promise<Task> {
-    const before = await this.repo.findById(id);
+  // groupId scopes the write to the caller's group (cross-group id → 404).
+  async move(id: string, status: TaskStatus, index: number, groupId?: string): Promise<Task> {
+    const before = await this.repo.findById(id, groupId);
     if (!before) throw new NotFoundException('task not found');
 
-    const task = await this.repo.move(id, status, index);
+    const task = await this.repo.move(id, status, index, groupId);
     if (!task) throw new NotFoundException('task not found');
 
     // Other cards in the column also shift positions — broadcast refresh so all clients re-fetch order.
@@ -75,14 +81,15 @@ export class TasksService {
     return task;
   }
 
-  async assign(id: string, userId: string, displayName?: string): Promise<Task> {
+  // groupId scopes the write to the caller's group (cross-group id → 404).
+  async assign(id: string, userId: string, displayName?: string, groupId?: string): Promise<Task> {
     if (displayName) {
       await this.repo.upsertUser(userId, displayName); // ensure user exists to avoid FK violation
     } else if (!(await this.repo.userExists(userId))) {
       // Unknown user with no display name supplied — return 400 explicitly rather than letting the FK fail as 500.
       throw new BadRequestException('unknown user — provide displayName');
     }
-    const task = await this.repo.assign(id, userId);
+    const task = await this.repo.assign(id, userId, groupId);
     if (!task) throw new NotFoundException('task not found');
     this.events.taskUpdated(task);
 

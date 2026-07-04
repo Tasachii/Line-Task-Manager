@@ -50,3 +50,29 @@ test("group B's key lists only group B tasks (cannot read group A)", async () =>
 test('an unknown key is rejected before any read', async () => {
   await assert.rejects(() => listWithKey('keyC'), UnauthorizedException);
 });
+
+// Writes must be group-scoped too (cross-tenant IDOR fix): the guard's resolved group_id is threaded
+// into TasksService.changeStatus/move/assign so a per-group key can only mutate its own group's task.
+test('per-group key scopes writes (status/move/assign) to its group', async () => {
+  const auth = new BoardAuthService(fakeConfig({ BOARD_GROUPS: GROUPS }));
+  const guard = new BoardKeyGuard(auth);
+  const calls: Record<string, unknown[]> = {};
+  const svc = {
+    changeStatus: (...a: unknown[]) => ((calls.changeStatus = a), Promise.resolve({})),
+    move: (...a: unknown[]) => ((calls.move = a), Promise.resolve({})),
+    assign: (...a: unknown[]) => ((calls.assign = a), Promise.resolve({})),
+  };
+  const controller = new TasksController(svc as never);
+  const req = { headers: { 'x-board-key': 'keyA' } } as { headers: Record<string, unknown>; boardGroupId?: string };
+  const ctx = { switchToHttp: () => ({ getRequest: () => req }) } as unknown as ExecutionContext;
+  guard.canActivate(ctx); // sets req.boardGroupId = 'groupA'
+
+  await controller.changeStatus('t1', { status: 'done' } as never, req as never);
+  await controller.move('t1', { status: 'done', index: 2 } as never, req as never);
+  await controller.assign('t1', { userId: 'u1', displayName: 'x' } as never, req as never);
+
+  // The resolved group_id ('groupA') is the last argument threaded into each service write.
+  assert.equal((calls.changeStatus ?? []).at(-1), 'groupA', 'changeStatus receives the group scope');
+  assert.equal((calls.move ?? []).at(-1), 'groupA', 'move receives the group scope');
+  assert.equal((calls.assign ?? []).at(-1), 'groupA', 'assign receives the group scope');
+});

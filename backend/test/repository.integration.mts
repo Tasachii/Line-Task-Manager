@@ -129,3 +129,67 @@ test('findAll(groupId) is scoped to that group only (A-8 / D-3)', async () => {
   await db.query('DELETE FROM tasks WHERE group_id = ANY($1)', [[groupA, groupB]]);
   await db.query('DELETE FROM line_messages WHERE message_id = ANY($1)', [[msgA, msgB]]);
 });
+
+// Per-group WRITE isolation — the cross-tenant IDOR fix. A board key scoped to group A must not be
+// able to change status, reorder, or assign a task that belongs to group B (id resolves to null → 404).
+test('per-group write scope: group A key cannot mutate group B task (IDOR fix)', async () => {
+  const groupA = `wA_${RUN}`;
+  const groupB = `wB_${RUN}`;
+  const msgA = `wmA_${RUN}`;
+  const msgB = `wmB_${RUN}`;
+  await repo.saveMessage(msgA, groupA, userId, 'seed A');
+  await repo.saveMessage(msgB, groupB, userId, 'seed B');
+  const taskB = await repo.createTask(
+    { title: 'B secret', description: 'B', groupId: groupB, sourceMessageId: msgB, createdBy: userId },
+    groupB,
+  );
+
+  // Group A's scope targeting group B's task id must be denied on every write path.
+  assert.equal(await repo.updateStatus(taskB.id, 'done', groupA), null, 'updateStatus cross-group denied');
+  assert.equal(await repo.move(taskB.id, 'done', 0, groupA), null, 'move cross-group denied');
+  assert.equal(await repo.assign(taskB.id, userId, groupA), null, 'assign cross-group denied');
+
+  // Group B's task is untouched.
+  const afterB = await repo.findById(taskB.id, groupB);
+  assert.equal(afterB?.status, 'todo', 'status unchanged by cross-group attempts');
+  assert.equal(afterB?.assignee_id, null, 'assignee unchanged by cross-group attempts');
+
+  // The rightful group B scope still mutates its own task.
+  assert.ok(await repo.updateStatus(taskB.id, 'in_process', groupB), 'same-group updateStatus works');
+
+  await db.query('DELETE FROM tasks WHERE group_id = ANY($1)', [[groupA, groupB]]);
+  await db.query('DELETE FROM line_messages WHERE message_id = ANY($1)', [[msgA, msgB]]);
+});
+
+// Per-group ordering — the drop index the client sends is relative to the group's own column, so a
+// scoped move must renumber only that group and leave a co-located group's cards untouched.
+test('multi-group ordering: group-relative move index is scoped to the group', async () => {
+  const groupA = `oA_${RUN}`;
+  const groupB = `oB_${RUN}`;
+  const msgA = `omA_${RUN}`;
+  const msgB = `omB_${RUN}`;
+  await repo.saveMessage(msgA, groupA, userId, 'seed A');
+  await repo.saveMessage(msgB, groupB, userId, 'seed B');
+
+  // Interleave creation so the two groups share the 'todo' column.
+  const mk = (g: string, m: string, title: string) =>
+    repo.createTask({ title, description: title, groupId: g, sourceMessageId: m, createdBy: userId }, g);
+  await mk(groupA, msgA, 'A1');
+  await mk(groupB, msgB, 'B1');
+  const a2 = await mk(groupA, msgA, 'A2');
+  await mk(groupB, msgB, 'B2');
+
+  // Group A sees [A1, A2]; move A2 to the front using the group-relative index 0.
+  assert.ok(await repo.move(a2.id, 'todo', 0, groupA), 'move within group A succeeds');
+
+  const colA = (await repo.findAll(groupA)).filter((t) => t.status === 'todo');
+  assert.deepEqual(colA.map((t) => t.title), ['A2', 'A1'], 'A2 moved ahead of A1 within group A');
+  assert.deepEqual(colA.map((t) => t.position), [0, 1], 'group A todo renumbered to a clean 0..1');
+
+  // Group B is untouched — its cards keep their order and are not renumbered by group A's move.
+  const colB = (await repo.findAll(groupB)).filter((t) => t.status === 'todo');
+  assert.deepEqual(colB.map((t) => t.title), ['B1', 'B2'], 'group B order preserved across group A move');
+
+  await db.query('DELETE FROM tasks WHERE group_id = ANY($1)', [[groupA, groupB]]);
+  await db.query('DELETE FROM line_messages WHERE message_id = ANY($1)', [[msgA, msgB]]);
+});

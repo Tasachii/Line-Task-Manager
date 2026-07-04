@@ -16,20 +16,21 @@ export class TasksController {
   }
 
   // Change status only (appends to the end of the new column).
+  // boardGroupId scopes the write so a per-group key can't mutate another group's task.
   @Patch(':id/status')
-  changeStatus(@Param('id') id: string, @Body() dto: UpdateStatusDto) {
-    return this.tasks.changeStatus(id, dto.status);
+  changeStatus(@Param('id') id: string, @Body() dto: UpdateStatusDto, @Req() req: BoardRequest) {
+    return this.tasks.changeStatus(id, dto.status, req.boardGroupId);
   }
 
   // Used when dragging a card: specify both the target column and position within it.
   @Patch(':id/move')
-  move(@Param('id') id: string, @Body() dto: MoveDto) {
-    return this.tasks.move(id, dto.status, dto.index);
+  move(@Param('id') id: string, @Body() dto: MoveDto, @Req() req: BoardRequest) {
+    return this.tasks.move(id, dto.status, dto.index, req.boardGroupId);
   }
 
   // Assign a task to a user.
   @Post(':id/assign')
-  assign(@Param('id') id: string, @Body() dto: AssignDto) {
-    return this.tasks.assign(id, dto.userId, dto.displayName);
+  assign(@Param('id') id: string, @Body() dto: AssignDto, @Req() req: BoardRequest) {
+    return this.tasks.assign(id, dto.userId, dto.displayName, req.boardGroupId);
   }
 }
