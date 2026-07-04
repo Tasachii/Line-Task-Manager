@@ -14,7 +14,8 @@ function roomFor(groupId: string | undefined): string {
 // Broadcasts events to connected board clients so they see updates in real time. When
 // BOARD_GROUPS is configured, each socket joins only its authorized group's room, so a client
 // holding group A's key never receives group B's task events (A-8/D-3 realtime scoping).
-@WebSocketGateway({ cors: { origin: process.env.CORS_ORIGIN ?? '*' } })
+// CORS is applied by ConfiguredIoAdapter (main.ts) from AppConfigService, not read here.
+@WebSocketGateway()
 export class EventsGateway implements OnGatewayConnection {
   @WebSocketServer()
   server: Server;
