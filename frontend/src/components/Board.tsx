@@ -6,11 +6,12 @@ import {
   DragOverEvent,
   DragOverlay,
   DragStartEvent,
+  KeyboardSensor,
   PointerSensor,
   useSensor,
   useSensors,
 } from '@dnd-kit/core';
-import { arrayMove } from '@dnd-kit/sortable';
+import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { COLUMNS, Task, TaskStatus } from '../types';
 import { assignTask, fetchTasks, moveTask } from '../api';
 import { getSocket } from '../socket';
@@ -30,8 +31,13 @@ export function Board({ currentMember }: Props) {
   const [offline, setOffline] = useState(false);
   const dragging = useRef(false);
 
-  // Require a 5px movement before drag starts (so button clicks inside cards still work)
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  // Require a 5px movement before drag starts (so button clicks inside cards still work).
+  // KeyboardSensor makes cards operable without a pointer: focus a card, Space to pick up,
+  // arrow keys to move between/within columns, Space to drop.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   useEffect(() => {
     fetchTasks().then(setTasks).catch((e) => setError(e.message));

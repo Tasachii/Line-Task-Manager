@@ -39,6 +39,7 @@ export function TaskCard({ task, onAssign, overlay }: Props) {
       ref={setNodeRef}
       style={style}
       className={`card ${overlay ? 'card--overlay' : ''}`}
+      aria-label={`การ์ดงาน: ${task.title}`}
       {...listeners}
       {...attributes}
     >

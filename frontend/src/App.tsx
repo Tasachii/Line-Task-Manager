@@ -62,8 +62,9 @@ export default function App() {
           <h1 className="app__title">Line Task Manager</h1>
         </header>
         <form className="app__login" onSubmit={submitKey}>
-          <p>บอร์ดนี้ถูกล็อก ใส่รหัสผ่านเพื่อเข้าใช้งาน</p>
+          <label htmlFor="board-key">บอร์ดนี้ถูกล็อก ใส่รหัสผ่านเพื่อเข้าใช้งาน</label>
           <input
+            id="board-key"
             className="app__me-input"
             type="password"
             value={keyInput}
