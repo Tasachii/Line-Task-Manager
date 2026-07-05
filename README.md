@@ -1,10 +1,10 @@
 # LINE Task Manager — Kanban board for LINE group chats
 
-![CI](https://github.com/Tasachii/LIne_Task_Manager/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/Tasachii/Line-Task-Manager/actions/workflows/ci.yml/badge.svg)
 
 LINE Task Manager is a webhook-driven Kanban board that turns LINE group messages into tracked tasks. A bot listens to a LINE group, parses `/task` keyword messages (or, with an Anthropic API key, plain natural-language messages) into cards, and places them on a four-column board — `Todo → In Process → Test → Done`. Status changes and assignments push a notification back to the group. The board is a React SPA served behind nginx; the backend is NestJS with PostgreSQL. Multiple LINE groups can share one deployment with full per-group data isolation via `BOARD_GROUPS`.
 
-**Issues** — [github.com/Tasachii/LIne_Task_Manager/issues](https://github.com/Tasachii/LIne_Task_Manager/issues)
+**Issues** — [github.com/Tasachii/Line-Task-Manager/issues](https://github.com/Tasachii/Line-Task-Manager/issues)
 
 ---
 
@@ -44,15 +44,15 @@ A single deployment handles one or more LINE groups. Each message that contains 
 
 **Mac / Linux**
 ```bash
-git clone https://github.com/Tasachii/LIne_Task_Manager.git
-cd LIne_Task_Manager
+git clone https://github.com/Tasachii/Line-Task-Manager.git
+cd Line-Task-Manager
 cp backend/.env.example backend/.env    # fill in LINE credentials (see Configuration table)
 ```
 
 **Windows**
 ```bat
-git clone https://github.com/Tasachii/LIne_Task_Manager.git
-cd LIne_Task_Manager
+git clone https://github.com/Tasachii/Line-Task-Manager.git
+cd Line-Task-Manager
 copy backend\.env.example backend\.env  :: fill in LINE credentials (see Configuration table)
 ```
 
