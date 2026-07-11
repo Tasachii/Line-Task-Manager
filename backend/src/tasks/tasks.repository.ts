@@ -22,6 +22,75 @@ export class TasksRepository {
     );
   }
 
+  async claimMessageAndCreateTasks(
+    message: {
+      messageId: string;
+      groupId: string;
+      userId: string;
+      content: string;
+      displayName?: string;
+    },
+    inputs: NewTaskInput[],
+    scopeGroupId?: string,
+  ): Promise<Task[] | null> {
+    return this.db.withTransaction(async (q) => {
+      const claimed = await q<{ message_id: string }>(
+        `INSERT INTO line_messages (message_id, group_id, user_id, content)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (message_id) DO NOTHING
+         RETURNING message_id`,
+        [message.messageId, message.groupId, message.userId, message.content],
+      );
+      if (claimed.length === 0) return null;
+      if (inputs.length === 0) return [];
+
+      await q(
+        `INSERT INTO users (id, line_user_id, display_name)
+         VALUES ($1, $1, $2)
+         ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name`,
+        [message.userId, message.displayName ?? message.userId],
+      );
+
+      await this.lockColumn(q, 'todo', scopeGroupId);
+      const positionParams: unknown[] = [];
+      let positionScope = '';
+      if (scopeGroupId !== undefined) {
+        positionParams.push(scopeGroupId);
+        positionScope = ' AND group_id = $1';
+      }
+      const [{ next_position: firstPosition }] = await q<{ next_position: number }>(
+        `SELECT COALESCE(MAX(position) + 1, 0)::int AS next_position
+         FROM tasks WHERE status = 'todo'${positionScope}`,
+        positionParams,
+      );
+
+      const created: Task[] = [];
+      for (let index = 0; index < inputs.length; index++) {
+        const input = inputs[index];
+        const id = uuid();
+        await q(
+          `INSERT INTO tasks
+             (id, title, description, status, source_message_id, group_id, created_by,
+              priority, due_date, position)
+           VALUES ($1, $2, $3, 'todo', $4, $5, $6, $7, $8, $9)`,
+          [
+            id,
+            input.title,
+            input.description,
+            message.messageId,
+            message.groupId,
+            message.userId,
+            input.priority ?? null,
+            input.dueDate ?? null,
+            firstPosition + index,
+          ],
+        );
+        created.push((await this.findByIdWith(q, id))!);
+      }
+      return created;
+    });
+  }
+
   async userExists(userId: string): Promise<boolean> {
     const rows = await this.db.query('SELECT 1 FROM users WHERE id = $1', [userId]);
     return rows.length > 0;

@@ -47,6 +47,24 @@ export class TasksService {
     return created;
   }
 
+  async claimMessageAndCreateTasks(
+    message: {
+      messageId: string;
+      groupId: string;
+      userId: string;
+      content: string;
+      displayName?: string;
+    },
+    inputs: NewTaskInput[],
+  ): Promise<Task[] | null> {
+    const scope = this.config.perGroupAuthEnabled ? message.groupId : undefined;
+    const created = await this.repo.claimMessageAndCreateTasks(message, inputs, scope);
+    if (created) {
+      for (const task of created) this.events.taskCreated(task);
+    }
+    return created;
+  }
+
   // groupId scopes the read to one group (per-group board isolation); undefined returns all groups.
   findAll(groupId?: string): Promise<Task[]> {
     return this.repo.findAll(groupId);

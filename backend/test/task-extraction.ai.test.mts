@@ -76,20 +76,33 @@ test('due_date present → passed through', async () => {
   assert.equal(out[0].dueDate, '2026-08-15');
 });
 
-test('fail-open: create rejects → returns []', async () => {
+test('create rejects → throws unavailable instead of impersonating a no-task result', async () => {
   const { svc } = withStub(async () => {
     throw new Error('boom');
   });
-  assert.deepEqual(await svc.extract('something'), []);
+  await assert.rejects(svc.extract('something'), {
+    name: 'TaskExtractionUnavailableError',
+    message: 'AI task extraction temporarily unavailable',
+  });
 });
 
-test('fail-open: timeout/abort error → returns []', async () => {
+test('timeout/abort error → throws unavailable so LINE can retry', async () => {
   const { svc } = withStub(async () => {
     const err = new Error('Request was aborted');
     err.name = 'AbortError';
     throw err;
   });
-  assert.deepEqual(await svc.extract('something else'), []);
+  await assert.rejects(svc.extract('something else'), {
+    name: 'TaskExtractionUnavailableError',
+    message: 'AI task extraction temporarily unavailable',
+  });
+});
+
+test('missing structured result → throws unavailable rather than claiming as no-task', async () => {
+  const { svc } = withStub(async () => ({ content: [] }));
+  await assert.rejects(svc.extract('please do something'), {
+    name: 'TaskExtractionUnavailableError',
+  });
 });
 
 // A-13 guard: structured result delivered via parsed_output only (no text block).
@@ -109,6 +122,43 @@ test('A-13: parsed_output-only response still extracts tasks', async () => {
 test('empty tasks array → no tasks', async () => {
   const { svc } = withStub(async () => asParsedOutput({ tasks: [] }));
   assert.deepEqual(await svc.extract('สวัสดีครับ'), []);
+});
+
+test('invalid priority enum → retryable unavailable error', async () => {
+  const { svc } = withStub(async () =>
+    asParsedOutput({
+      tasks: [{ title: 'งาน', description: 'รายละเอียด', priority: 'urgent' }],
+    }),
+  );
+  await assert.rejects(svc.extract('please do this urgently'), {
+    name: 'TaskExtractionUnavailableError',
+  });
+});
+
+test('invalid field types, blank required fields, and extra keys are rejected', async () => {
+  const invalidTasks = [
+    { title: 42, description: 'รายละเอียด' },
+    { title: '   ', description: 'รายละเอียด' },
+    { title: 'งาน', description: false },
+    { title: 'งาน', description: 'รายละเอียด', unexpected: true },
+  ];
+  for (const task of invalidTasks) {
+    const { svc } = withStub(async () => asParsedOutput({ tasks: [task] }));
+    await assert.rejects(svc.extract('please do this'), {
+      name: 'TaskExtractionUnavailableError',
+    });
+  }
+});
+
+test('due_date must be a real strict YYYY-MM-DD calendar date', async () => {
+  for (const due_date of ['2026-02-30', '2026-2-03', '0000-01-01', 20260701]) {
+    const { svc } = withStub(async () =>
+      asParsedOutput({ tasks: [{ title: 'งาน', description: 'รายละเอียด', due_date }] }),
+    );
+    await assert.rejects(svc.extract('please do this by a date'), {
+      name: 'TaskExtractionUnavailableError',
+    });
+  }
 });
 
 test('keyword path bypasses AI even when ANTHROPIC_API_KEY is set', async () => {

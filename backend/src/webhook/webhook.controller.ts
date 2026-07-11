@@ -5,6 +5,7 @@ import {
   Post,
   Req,
   RawBodyRequest,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { Request } from 'express';
 import { SkipThrottle } from '@nestjs/throttler';
@@ -33,10 +34,15 @@ export class WebhookController {
     }
 
     const body = req.body as { events?: webhook.Event[] };
-    // Respond 200 to LINE immediately, then process events asynchronously to prevent LINE retries.
-    // handleEvents isolates per-event errors internally; the .catch() guards against any
-    // unexpected top-level rejection so a future change can't crash the process.
-    this.webhookService.handleEvents(body.events ?? []).catch(() => {});
+    // Acknowledge only after classification and durable intake both succeed. If AI extraction
+    // or the database is unavailable, return a retryable response instead of losing the event.
+    try {
+      await this.webhookService.handleEvents(body.events ?? []);
+    } catch (cause) {
+      // 503 explicitly tells LINE that verified intake did not complete and should be retried.
+      // The internal cause is retained for observability without exposing upstream details.
+      throw new ServiceUnavailableException('webhook intake temporarily unavailable', { cause });
+    }
     return { ok: true };
   }
 }

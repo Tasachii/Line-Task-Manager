@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import { webhook } from '@line/bot-sdk';
 import { LineClientService } from '../line/line-client.service';
 import { TasksService } from '../tasks/tasks.service';
-import { TasksRepository } from '../tasks/tasks.repository';
 import { TaskExtractionService } from '../tasks/task-extraction.service';
 import { AppConfigService } from '../config/app-config.service';
 import { NewTaskInput } from '../tasks/dto/task.types';
@@ -17,7 +16,6 @@ export class WebhookService {
   constructor(
     private readonly line: LineClientService,
     private readonly tasks: TasksService,
-    private readonly repo: TasksRepository,
     private readonly extractor: TaskExtractionService,
     private readonly config: AppConfigService,
   ) {
@@ -27,19 +25,24 @@ export class WebhookService {
   async handleEvents(events: webhook.Event[]): Promise<void> {
     // Process events with at most `concurrency` in flight; workers pull from a shared cursor.
     let cursor = 0;
+    const failures: Error[] = [];
     const runWorker = async (): Promise<void> => {
       while (cursor < events.length) {
         const event = events[cursor++];
         try {
           await this.handleOne(event);
         } catch (e) {
-          // One failing event must not abort the whole batch.
-          this.logger.error(`handle event failed: ${(e as Error).message}`);
+          const error = e instanceof Error ? e : new Error(String(e));
+          failures.push(error);
+          this.logger.error(`handle event failed: ${error.message}`);
         }
       }
     };
     const workers = Array.from({ length: Math.min(this.concurrency, events.length) }, runWorker);
     await Promise.all(workers);
+    if (failures.length > 0) {
+      throw new AggregateError(failures, `${failures.length} webhook event(s) failed`);
+    }
   }
 
   private async handleOne(event: webhook.Event): Promise<void> {
@@ -66,19 +69,9 @@ export class WebhookService {
     const messageId = event.message.id;
     const text = event.message.text;
 
-    // Deduplicate on LINE webhook retries.
-    if (await this.repo.messageExists(messageId)) {
-      this.logger.log(`skip duplicate message ${messageId}`);
-      return;
-    }
-    await this.repo.saveMessage(messageId, groupId, userId, text);
-
     const extracted = await this.extractor.extract(text);
-    if (extracted.length === 0) return; // not a task message, skip
-
-    // Fetch the requester's display name then upsert into users.
-    const displayName = await this.line.getGroupMemberName(groupId, userId);
-    await this.repo.upsertUser(userId, displayName);
+    const displayName =
+      extracted.length > 0 ? await this.line.getGroupMemberName(groupId, userId) : undefined;
 
     const inputs: NewTaskInput[] = extracted.map((t) => ({
       title: t.title,
@@ -89,7 +82,15 @@ export class WebhookService {
       priority: t.priority,
       dueDate: t.dueDate,
     }));
-    const created = await this.tasks.createMany(inputs);
+    const created = await this.tasks.claimMessageAndCreateTasks(
+      { messageId, groupId, userId, content: text, displayName },
+      inputs,
+    );
+    if (created === null) {
+      this.logger.log(`skip duplicate message ${messageId}`);
+      return;
+    }
+    if (created.length === 0) return;
 
     // Send confirmation back to the group (optional).
     if (event.replyToken) {

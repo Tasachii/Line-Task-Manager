@@ -11,7 +11,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import express from 'express';
 import type { AddressInfo } from 'node:net';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, HttpException } from '@nestjs/common';
 import { fakeConfig } from './helpers/config.mts';
 
 process.env.LINE_CHANNEL_SECRET = 'test_secret';
@@ -26,7 +26,13 @@ const sign = (body: string, secret = SECRET) =>
 let server: http.Server;
 let baseUrl: string;
 const handled: unknown[][] = [];
-const spy = { handleEvents: (...args: unknown[]) => { handled.push(args); return Promise.resolve(); } };
+let handleError: Error | null = null;
+const spy = {
+  handleEvents: (...args: unknown[]) => {
+    handled.push(args);
+    return handleError ? Promise.reject(handleError) : Promise.resolve();
+  },
+};
 const controller = new WebhookController(new LineClientService(fakeConfig()), spy as never);
 
 before(async () => {
@@ -44,8 +50,8 @@ before(async () => {
       const result = await controller.receive(req as never, req.header('x-line-signature') as never);
       res.status(200).json(result);
     } catch (e) {
-      if (e instanceof BadRequestException) {
-        res.status(400).json(e.getResponse());
+      if (e instanceof HttpException) {
+        res.status(e.getStatus()).json(e.getResponse());
       } else {
         res.status(500).json({ error: (e as Error).message });
       }
@@ -63,6 +69,7 @@ after(async () => {
 
 beforeEach(() => {
   handled.length = 0;
+  handleError = null;
 });
 
 async function post(body: string, sig?: string) {
@@ -120,4 +127,13 @@ test('body tampered after signing → 400', async () => {
   const res = await post(tampered, sig);
   assert.equal(res.status, 400);
   assert.equal(handled.length, 0);
+});
+
+test('processing failure → 503 so LINE can retry instead of losing the event', async () => {
+  handleError = new Error('database unavailable');
+  const body = JSON.stringify({ events: [{ type: 'message', message: { type: 'text', id: 'm-db', text: '/task retry' } }] });
+  const res = await post(body, sign(body));
+  assert.equal(res.status, 503);
+  assert.match(JSON.stringify(res.body), /temporarily unavailable/);
+  assert.equal(handled.length, 1);
 });

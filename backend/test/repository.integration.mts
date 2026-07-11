@@ -101,6 +101,71 @@ test('saveMessage is idempotent on duplicate messageId (ON CONFLICT DO NOTHING)'
   await db.query('DELETE FROM line_messages WHERE message_id = $1', [dupId]);
 });
 
+test('concurrent message intake atomically creates one task set', async () => {
+  const concurrentMessageId = `intake_${RUN}`;
+  const input = {
+    title: 'exactly once',
+    description: 'concurrent webhook retry',
+    groupId,
+    sourceMessageId: concurrentMessageId,
+    createdBy: userId,
+  };
+  const attempts = await Promise.all(
+    Array.from({ length: 20 }, () =>
+      repo.claimMessageAndCreateTasks(
+        {
+          messageId: concurrentMessageId,
+          groupId,
+          userId,
+          content: '/task exactly once',
+          displayName: 'Integration Tester',
+        },
+        [input],
+        groupId,
+      ),
+    ),
+  );
+
+  assert.equal(attempts.filter((result) => result !== null).length, 1, 'one caller claims the message');
+  const tasks = await db.query(
+    'SELECT id FROM tasks WHERE source_message_id = $1',
+    [concurrentMessageId],
+  );
+  assert.equal(tasks.length, 1, 'one task is committed for 20 concurrent deliveries');
+
+  await db.query('DELETE FROM tasks WHERE source_message_id = $1', [concurrentMessageId]);
+  await db.query('DELETE FROM line_messages WHERE message_id = $1', [concurrentMessageId]);
+});
+
+test('failed intake rolls back its claim so a retry can succeed', async () => {
+  const retryMessageId = `retry_${RUN}`;
+  const message = {
+    messageId: retryMessageId,
+    groupId,
+    userId,
+    content: '/task retry after rollback',
+    displayName: 'Integration Tester',
+  };
+  const input = {
+    title: 'retry after rollback',
+    description: 'database failure must not consume the claim',
+    groupId,
+    sourceMessageId: retryMessageId,
+    createdBy: userId,
+  };
+
+  await assert.rejects(
+    repo.claimMessageAndCreateTasks(message, [{ ...input, dueDate: 'not-a-date' }], groupId),
+  );
+  assert.equal(await repo.messageExists(retryMessageId), false, 'failed transaction releases claim');
+
+  const retried = await repo.claimMessageAndCreateTasks(message, [input], groupId);
+  assert.equal(retried?.length, 1, 'same LINE message can be retried after rollback');
+
+  await db.query('DELETE FROM tasks WHERE source_message_id = $1', [retryMessageId]);
+  await db.query('DELETE FROM line_messages WHERE message_id = $1', [retryMessageId]);
+});
+
 // A-8 / D-3 — per-group isolation. findAll(groupId) must return only that group's rows so a
 // client holding group A's board key can never read group B's tasks (the data-leak fix).
 test('findAll(groupId) is scoped to that group only (A-8 / D-3)', async () => {

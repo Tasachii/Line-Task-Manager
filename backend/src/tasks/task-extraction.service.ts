@@ -10,6 +10,16 @@ export interface ExtractedTask {
   dueDate?: string; // YYYY-MM-DD
 }
 
+// A genuine "no task" classification is represented by a successful empty array.
+// This error is reserved for cases where the classifier could not produce a trustworthy
+// result, so webhook intake must not durably claim the LINE message and may be retried.
+export class TaskExtractionUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super('AI task extraction temporarily unavailable', { cause });
+    this.name = 'TaskExtractionUnavailableError';
+  }
+}
+
 // Shape of the structured output produced by Claude per EXTRACT_SCHEMA.
 interface ExtractionResult {
   tasks: {
@@ -18,6 +28,35 @@ interface ExtractionResult {
     priority?: TaskPriority;
     due_date?: string | null;
   }[];
+}
+
+const TASK_KEYS = new Set(['title', 'description', 'priority', 'due_date']);
+const PRIORITIES = new Set<TaskPriority>(['low', 'medium', 'high']);
+
+function isStrictDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || value.startsWith('0000-')) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function isExtractionResult(value: unknown): value is ExtractionResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const root = value as Record<string, unknown>;
+  if (Object.keys(root).length !== 1 || !Array.isArray(root.tasks)) return false;
+  return root.tasks.every((task) => {
+    if (!task || typeof task !== 'object' || Array.isArray(task)) return false;
+    const item = task as Record<string, unknown>;
+    if (Object.keys(item).some((key) => !TASK_KEYS.has(key))) return false;
+    if (typeof item.title !== 'string' || !item.title.trim()) return false;
+    if (typeof item.description !== 'string' || !item.description.trim()) return false;
+    if (item.priority !== undefined && (
+      typeof item.priority !== 'string' || !PRIORITIES.has(item.priority as TaskPriority)
+    )) return false;
+    if (item.due_date !== undefined && item.due_date !== null && (
+      typeof item.due_date !== 'string' || !isStrictDate(item.due_date)
+    )) return false;
+    return true;
+  });
 }
 
 // JSON schema for Claude's structured output — enforces this exact response shape.
@@ -127,7 +166,8 @@ export class TaskExtractionService {
     return graphemes.slice(0, 60).map((g) => g.segment).join('') + '…';
   }
 
-  // Ask Claude to classify the message — returns [] on error or timeout (fail-open, never blocks the webhook).
+  // Ask Claude to classify the message. A valid `tasks: []` is a successful no-task result;
+  // transport, timeout, parse, and protocol failures throw so webhook intake remains retryable.
   private async extractByAI(message: string): Promise<ExtractedTask[]> {
     try {
       const res = await this.anthropic!.messages.create({
@@ -139,7 +179,9 @@ export class TaskExtractionService {
       });
 
       const parsed = this.parseExtraction(res);
-      if (!parsed) return [];
+      if (!isExtractionResult(parsed)) {
+        throw new Error('AI response contained an invalid structured extraction result');
+      }
       return parsed.tasks.map((t) => ({
         title: this.truncateTitle(t.title),
         description: t.description,
@@ -147,21 +189,22 @@ export class TaskExtractionService {
         dueDate: t.due_date ?? undefined,
       }));
     } catch (e) {
-      this.logger.warn(`AI extract failed (fail-open, skip message): ${(e as Error).message}`);
-      return [];
+      const detail = e instanceof Error ? e.message : String(e);
+      this.logger.warn(`AI extract failed; webhook delivery will be retried: ${detail}`);
+      throw new TaskExtractionUnavailableError(e);
     }
   }
 
   // With output_config.format the SDK surfaces the structured result in `parsed_output`;
   // the assistant turn is not guaranteed to also include a plain text block. Read
   // `parsed_output` first, then fall back to the first text block for older shapes.
-  private parseExtraction(res: Anthropic.Message): ExtractionResult | null {
+  private parseExtraction(res: Anthropic.Message): unknown {
     const fromParsed = (res as { parsed_output?: unknown }).parsed_output;
     if (fromParsed && typeof fromParsed === 'object') {
-      return fromParsed as ExtractionResult;
+      return fromParsed;
     }
     const text = res.content.find((b) => b.type === 'text')?.text;
     if (!text) return null;
-    return JSON.parse(text) as ExtractionResult;
+    return JSON.parse(text) as unknown;
   }
 }
