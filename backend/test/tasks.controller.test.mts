@@ -52,8 +52,9 @@ test('an unknown key is rejected before any read', async () => {
 });
 
 // Writes must be group-scoped too (cross-tenant IDOR fix): the guard's resolved group_id is threaded
-// into TasksService.changeStatus/move/assign so a per-group key can only mutate its own group's task.
-test('per-group key scopes writes (status/move/assign) to its group', async () => {
+// into TasksService.changeStatus/move/assign/update/remove so a per-group key can only mutate its
+// own group's task.
+test('per-group key scopes writes (status/move/assign/update/remove) to its group', async () => {
   const auth = new BoardAuthService(fakeConfig({ BOARD_GROUPS: GROUPS }));
   const guard = new BoardKeyGuard(auth);
   const calls: Record<string, unknown[]> = {};
@@ -61,6 +62,8 @@ test('per-group key scopes writes (status/move/assign) to its group', async () =
     changeStatus: (...a: unknown[]) => ((calls.changeStatus = a), Promise.resolve({})),
     move: (...a: unknown[]) => ((calls.move = a), Promise.resolve({})),
     assign: (...a: unknown[]) => ((calls.assign = a), Promise.resolve({})),
+    update: (...a: unknown[]) => ((calls.update = a), Promise.resolve({})),
+    remove: (...a: unknown[]) => ((calls.remove = a), Promise.resolve({})),
   };
   const controller = new TasksController(svc as never);
   const req = { headers: { 'x-board-key': 'keyA' } } as { headers: Record<string, unknown>; boardGroupId?: string };
@@ -70,9 +73,13 @@ test('per-group key scopes writes (status/move/assign) to its group', async () =
   await controller.changeStatus('t1', { status: 'done' } as never, req as never);
   await controller.move('t1', { status: 'done', index: 2 } as never, req as never);
   await controller.assign('t1', { userId: 'u1', displayName: 'x' } as never, req as never);
+  await controller.update('t1', { title: 'fixed' } as never, req as never);
+  await controller.remove('t1', req as never);
 
   // The resolved group_id ('groupA') is the last argument threaded into each service write.
   assert.equal((calls.changeStatus ?? []).at(-1), 'groupA', 'changeStatus receives the group scope');
   assert.equal((calls.move ?? []).at(-1), 'groupA', 'move receives the group scope');
   assert.equal((calls.assign ?? []).at(-1), 'groupA', 'assign receives the group scope');
+  assert.equal((calls.update ?? []).at(-1), 'groupA', 'update receives the group scope');
+  assert.equal((calls.remove ?? []).at(-1), 'groupA', 'remove receives the group scope');
 });

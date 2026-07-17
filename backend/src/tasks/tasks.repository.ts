@@ -149,14 +149,17 @@ export class TasksRepository {
 
   // Scoped to a single group when groupId is provided (per-group board isolation, A-8/D-3);
   // returns every group's tasks only when groupId is undefined (single-tenant / dev mode).
+  // Soft-deleted cards are always excluded (deleted_at IS NULL).
   async findAll(groupId?: string): Promise<Task[]> {
     if (groupId !== undefined) {
       return this.db.query<Task>(
-        `${this.selectSql} WHERE t.group_id = $1 ORDER BY t.status, t.position, t.created_at`,
+        `${this.selectSql} WHERE t.group_id = $1 AND t.deleted_at IS NULL ORDER BY t.status, t.position, t.created_at`,
         [groupId],
       );
     }
-    return this.db.query<Task>(`${this.selectSql} ORDER BY t.status, t.position, t.created_at`);
+    return this.db.query<Task>(
+      `${this.selectSql} WHERE t.deleted_at IS NULL ORDER BY t.status, t.position, t.created_at`,
+    );
   }
 
   // `groupId` scopes the lookup to one group so a per-group board key can never resolve a task
@@ -168,11 +171,15 @@ export class TasksRepository {
 
   // findById over an arbitrary query function so it works inside a transaction (read-your-writes).
   // When groupId is set the row must also belong to that group, otherwise it resolves to null.
+  // A soft-deleted task also resolves to null, so every write path below 404s on a deleted card.
   private async findByIdWith(q: Query, id: string, groupId?: string): Promise<Task | null> {
     const rows =
       groupId === undefined
-        ? await q<Task>(`${this.selectSql} WHERE t.id = $1`, [id])
-        : await q<Task>(`${this.selectSql} WHERE t.id = $1 AND t.group_id = $2`, [id, groupId]);
+        ? await q<Task>(`${this.selectSql} WHERE t.id = $1 AND t.deleted_at IS NULL`, [id])
+        : await q<Task>(`${this.selectSql} WHERE t.id = $1 AND t.group_id = $2 AND t.deleted_at IS NULL`, [
+            id,
+            groupId,
+          ]);
     return rows[0] ?? null;
   }
 
@@ -268,5 +275,62 @@ export class TasksRepository {
     );
     if (updated.length === 0) return null;
     return this.findById(id, groupId);
+  }
+
+  // Edit title/description/assignee — only the supplied fields change. groupId (when set) scopes
+  // the write the same way as the other mutators (cross-group id → null → 404). The row must not
+  // already be soft-deleted, so an edit can never resurrect a deleted card's fields silently.
+  async update(
+    id: string,
+    fields: { title?: string; description?: string; assigneeId?: string },
+    groupId?: string,
+  ): Promise<Task | null> {
+    const sets: string[] = [];
+    const params: unknown[] = [id];
+    if (fields.title !== undefined) {
+      params.push(fields.title);
+      sets.push(`title = $${params.length}`);
+    }
+    if (fields.description !== undefined) {
+      params.push(fields.description);
+      sets.push(`description = $${params.length}`);
+    }
+    if (fields.assigneeId !== undefined) {
+      params.push(fields.assigneeId);
+      sets.push(`assignee_id = $${params.length}`);
+    }
+    if (sets.length === 0) return this.findById(id, groupId); // no-op edit — just confirm the task exists
+
+    let scopeFilter = '';
+    if (groupId !== undefined) {
+      params.push(groupId);
+      scopeFilter = ` AND group_id = $${params.length}`;
+    }
+    const updated = await this.db.query(
+      `UPDATE tasks SET ${sets.join(', ')}, updated_at = now()
+       WHERE id = $1 AND deleted_at IS NULL${scopeFilter} RETURNING id`,
+      params,
+    );
+    if (updated.length === 0) return null;
+    return this.findById(id, groupId);
+  }
+
+  // Soft-delete: marks the card deleted_at = now() rather than removing the row, so history survives.
+  // Idempotent-as-404: deleting an already-deleted (or cross-group) id affects zero rows → null.
+  // Returns the minimal fields the caller needs to broadcast the removal (id + group_id for the room).
+  async softDelete(id: string, groupId?: string): Promise<{ id: string; group_id: string } | null> {
+    const params: unknown[] = [id];
+    let scopeFilter = '';
+    if (groupId !== undefined) {
+      params.push(groupId);
+      scopeFilter = ' AND group_id = $2';
+    }
+    const rows = await this.db.query<{ id: string; group_id: string }>(
+      `UPDATE tasks SET deleted_at = now(), updated_at = now()
+       WHERE id = $1 AND deleted_at IS NULL${scopeFilter}
+       RETURNING id, group_id`,
+      params,
+    );
+    return rows[0] ?? null;
   }
 }

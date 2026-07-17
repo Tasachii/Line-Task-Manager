@@ -67,14 +67,18 @@ tasks, and the assignee identity is a client-generated random id (`App.tsx` `loa
 
 ## P1 — High-value features
 
-### P1.1 — Edit and delete cards from the board
+### P1.1 — Edit and delete cards from the board — ✅ shipped
 
 - **Why:** Today cards are immutable once created; typos and stale tasks can't be fixed from the UI.
-- **Where:** New `PATCH /tasks/:id` and `DELETE /tasks/:id` in `tasks.controller.ts` →
+- **Where:** `PATCH /tasks/:id` and `DELETE /tasks/:id` in `tasks.controller.ts` →
   `tasks.service.ts` → `tasks.repository.ts`; frontend `TaskCard.tsx` (edit/delete affordance),
-  `api.ts`. Emit `task:updated` / a new `task:deleted` event.
-- **Acceptance:** Editing title/description/priority/due-date persists and broadcasts; delete removes
-  the card for all clients; both respect auth.
+  `api.ts`. Emits `task:updated` on edit and `task:deleted` on delete. Delete is a soft-delete
+  (`tasks.deleted_at`, `migrations/006_add_deleted_at_to_tasks.sql`) — the row is kept for history
+  and excluded from `findAll`/`findById`, not hard-deleted.
+- **Shipped scope:** title/description/assignee edit + soft-delete, both group-scoped (IDOR-safe)
+  and covered by unit + integration tests.
+- **Not yet done:** priority/due-date are not editable from this endpoint — open a follow-up if
+  needed (small addition: extend `UpdateTaskDto` + `TasksRepository.update()`'s field list).
 - **Effort:** M.
 
 ### P1.2 — Weekly statistics & summary reports (Phase 4)

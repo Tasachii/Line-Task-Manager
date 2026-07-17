@@ -152,8 +152,10 @@ BOARD_GROUPS={"Cabc123...":"keyA","Cdef456...":"keyB"}
 | `PATCH` | `/tasks/:id/status` | `x-board-key` | Change status — card is appended to the target column |
 | `PATCH` | `/tasks/:id/move` | `x-board-key` | Move a card to `{status, index}`; used by drag-and-drop |
 | `POST` | `/tasks/:id/assign` | `x-board-key` | Assign a task: `{userId, displayName}` |
+| `PATCH` | `/tasks/:id` | `x-board-key` | Edit a card: `{title?, description?, assigneeId?, assigneeName?}` |
+| `DELETE` | `/tasks/:id` | `x-board-key` | Soft-delete a card (kept in the database, excluded from the board) |
 
-WebSocket: clients send `auth.key` on connect when a password is set; the server emits `task:created`, `task:updated`, `tasks:refresh`.
+WebSocket: clients send `auth.key` on connect when a password is set; the server emits `task:created`, `task:updated`, `task:deleted`, `tasks:refresh`.
 
 ---
 
@@ -209,7 +211,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full prioritized backlog with cod
 - [x] Real-time board updates over WebSocket
 - [x] Docker full-stack deployment
 - [ ] LINE Login for per-user identity (P0 — before multi-team use)
-- [ ] Edit and delete cards from the board (P1)
+- [x] Edit and soft-delete cards from the board (P1) — title/description/assignee edit; priority/due-date edit not yet exposed
 - [ ] Weekly statistics posted to the LINE group (P1)
 - [ ] Structured logging and metrics (P2)
 

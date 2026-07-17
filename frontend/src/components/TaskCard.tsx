@@ -1,9 +1,12 @@
+import { useState } from 'react';
 import { useSortable } from '@dnd-kit/sortable';
 import { Task } from '../types';
 
 interface Props {
   task: Task;
   onAssign: (task: Task) => void;
+  onEdit: (task: Task, patch: { title: string; description: string }) => void | Promise<void>;
+  onDelete: (task: Task) => void;
   overlay?: boolean; // card floating under the pointer during a drag
 }
 
@@ -23,16 +26,68 @@ function isOverdue(task: Task): boolean {
   return task.due_date.slice(0, 10) < todayLocalISO();
 }
 
-export function TaskCard({ task, onAssign, overlay }: Props) {
+export function TaskCard({ task, onAssign, onEdit, onDelete, overlay }: Props) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
   });
+  const [editing, setEditing] = useState(false);
+  const [title, setTitle] = useState(task.title);
+  const [description, setDescription] = useState(task.description);
 
   const style: React.CSSProperties = {
     transform: transform ? `translate3d(${transform.x}px, ${transform.y}px, 0)` : undefined,
     transition,
     opacity: isDragging && !overlay ? 0.4 : 1,
   };
+
+  function startEdit() {
+    setTitle(task.title);
+    setDescription(task.description);
+    setEditing(true);
+  }
+
+  async function saveEdit() {
+    const trimmed = title.trim();
+    if (!trimmed) return; // title required — keep editing rather than submit an empty title
+    await onEdit(task, { title: trimmed, description });
+    setEditing(false);
+  }
+
+  function handleDelete() {
+    if (window.confirm(`ลบการ์ด "${task.title}" ใช่หรือไม่? (กู้คืนไม่ได้จากหน้าบอร์ด)`)) {
+      onDelete(task);
+    }
+  }
+
+  if (editing) {
+    return (
+      <div
+        ref={setNodeRef}
+        style={style}
+        className="card card--editing"
+        onPointerDown={(e) => e.stopPropagation()} // editing a card must never start a drag
+      >
+        <input
+          className="card__edit-input"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="ชื่องาน"
+          autoFocus
+        />
+        <textarea
+          className="card__edit-textarea"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="รายละเอียด"
+          rows={3}
+        />
+        <div className="card__edit-actions">
+          <button className="card__take" onClick={saveEdit}>บันทึก</button>
+          <button className="card__cancel" onClick={() => setEditing(false)}>ยกเลิก</button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -43,7 +98,37 @@ export function TaskCard({ task, onAssign, overlay }: Props) {
       {...listeners}
       {...attributes}
     >
-      <p className="card__title">{task.title}</p>
+      <div className="card__head">
+        <p className="card__title">{task.title}</p>
+        {!overlay && (
+          <div className="card__actions">
+            <button
+              className="card__icon-btn"
+              title="แก้ไข"
+              aria-label={`แก้ไขการ์ดงาน: ${task.title}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                startEdit();
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              ✏️
+            </button>
+            <button
+              className="card__icon-btn"
+              title="ลบ"
+              aria-label={`ลบการ์ดงาน: ${task.title}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                handleDelete();
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              🗑️
+            </button>
+          </div>
+        )}
+      </div>
       {task.description !== task.title && (
         <p className="card__desc">{task.description}</p>
       )}

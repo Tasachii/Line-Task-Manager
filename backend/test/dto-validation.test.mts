@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { ValidationPipe, BadRequestException } from '@nestjs/common';
 import type { ArgumentMetadata } from '@nestjs/common';
 
-const { UpdateStatusDto, MoveDto, AssignDto } = await import('../src/tasks/dto/task.types');
+const { UpdateStatusDto, MoveDto, AssignDto, UpdateTaskDto } = await import('../src/tasks/dto/task.types');
 
 const pipe = new ValidationPipe({ whitelist: true, transform: true });
 const meta = (metatype: unknown): ArgumentMetadata =>
@@ -56,4 +56,32 @@ test('AssignDto: missing optional displayName → passes', async () => {
 test('AssignDto: displayName provided → passes through', async () => {
   const out = await pipe.transform({ userId: 'U123', displayName: 'Nok' }, meta(AssignDto));
   assert.equal(out.displayName, 'Nok');
+});
+
+// UpdateTaskDto
+test('UpdateTaskDto: all fields optional — empty body passes', async () => {
+  const out = await pipe.transform({}, meta(UpdateTaskDto));
+  assert.equal(out.title, undefined);
+  assert.equal(out.description, undefined);
+  assert.equal(out.assigneeId, undefined);
+});
+test('UpdateTaskDto: empty-string title (@MinLength 1) → rejected', async () => {
+  await expectReject(UpdateTaskDto, { title: '' });
+});
+test('UpdateTaskDto: empty-string assigneeId (@MinLength 1) → rejected', async () => {
+  await expectReject(UpdateTaskDto, { assigneeId: '' });
+});
+test('UpdateTaskDto: title + description edit passes and whitelist strips unknown fields', async () => {
+  const out = await pipe.transform(
+    { title: 'fixed title', description: 'fixed description', hacker: 'drop table' },
+    meta(UpdateTaskDto),
+  );
+  assert.equal(out.title, 'fixed title');
+  assert.equal(out.description, 'fixed description');
+  assert.equal('hacker' in out, false);
+});
+test('UpdateTaskDto: assigneeId + assigneeName passes', async () => {
+  const out = await pipe.transform({ assigneeId: 'U123', assigneeName: 'Nok' }, meta(UpdateTaskDto));
+  assert.equal(out.assigneeId, 'U123');
+  assert.equal(out.assigneeName, 'Nok');
 });

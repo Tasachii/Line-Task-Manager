@@ -3,7 +3,7 @@ import { TasksRepository } from './tasks.repository';
 import { EventsGateway } from '../realtime/events.gateway';
 import { LineClientService } from '../line/line-client.service';
 import { AppConfigService } from '../config/app-config.service';
-import { NewTaskInput, Task, TaskStatus, TASK_STATUSES } from './dto/task.types';
+import { NewTaskInput, Task, TaskStatus, TASK_STATUSES, UpdateTaskDto } from './dto/task.types';
 
 // Thai status labels used in LINE group notification messages.
 const STATUS_LABELS: Record<TaskStatus, string> = {
@@ -118,6 +118,37 @@ export class TasksService {
       );
     }
     return task;
+  }
+
+  // Edit title/description/assignee — the fix for a bad LINE-parse (title/description) or a
+  // wrong claim (assignee) without losing the card. groupId scopes the write like the other
+  // mutators (cross-group id → 404). assigneeId reuses assign()'s user-resolution rule: a known
+  // user id is accepted as-is, an unknown one requires assigneeName to upsert it first.
+  async update(id: string, dto: UpdateTaskDto, groupId?: string): Promise<Task> {
+    if (dto.assigneeId !== undefined) {
+      if (dto.assigneeName) {
+        await this.repo.upsertUser(dto.assigneeId, dto.assigneeName);
+      } else if (!(await this.repo.userExists(dto.assigneeId))) {
+        throw new BadRequestException('unknown user — provide assigneeName');
+      }
+    }
+    const task = await this.repo.update(
+      id,
+      { title: dto.title, description: dto.description, assigneeId: dto.assigneeId },
+      groupId,
+    );
+    if (!task) throw new NotFoundException('task not found');
+    this.events.taskUpdated(task);
+    return task;
+  }
+
+  // Soft-delete: card disappears from the board but the row (and its history) is kept.
+  // groupId scopes the write to the caller's group (cross-group id → 404).
+  async remove(id: string, groupId?: string): Promise<{ id: string }> {
+    const deleted = await this.repo.softDelete(id, groupId);
+    if (!deleted) throw new NotFoundException('task not found');
+    this.events.taskDeleted(deleted.id, deleted.group_id);
+    return { id: deleted.id };
   }
 
   // Notifies the LINE group of a status change (fire-and-forget — push failure does not affect the API).

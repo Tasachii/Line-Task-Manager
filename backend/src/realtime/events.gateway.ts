@@ -50,8 +50,13 @@ export class EventsGateway implements OnGatewayConnection {
     this.emit('tasks:refresh', undefined, groupId);
   }
 
+  // Card was soft-deleted — clients remove it from the board by id (no full refetch needed).
+  taskDeleted(id: string, groupId: string) {
+    this.emit('task:deleted', { id }, groupId);
+  }
+
   // Emit to the group's room when per-group isolation is on; broadcast to everyone otherwise.
-  private emit(event: string, payload: Task | undefined, groupId: string | undefined) {
+  private emit(event: string, payload: unknown, groupId: string | undefined) {
     if (!this.server) return;
     if (this.config.perGroupAuthEnabled) {
       this.server.to(roomFor(groupId)).emit(event, payload);

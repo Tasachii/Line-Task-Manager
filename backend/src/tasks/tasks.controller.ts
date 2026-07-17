@@ -1,6 +1,6 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { TasksService } from './tasks.service';
-import { AssignDto, MoveDto, UpdateStatusDto } from './dto/task.types';
+import { AssignDto, MoveDto, UpdateStatusDto, UpdateTaskDto } from './dto/task.types';
 import { BoardKeyGuard, BoardRequest } from '../auth/board-key.guard';
 
 @Controller('tasks')
@@ -32,5 +32,17 @@ export class TasksController {
   @Post(':id/assign')
   assign(@Param('id') id: string, @Body() dto: AssignDto, @Req() req: BoardRequest) {
     return this.tasks.assign(id, dto.userId, dto.displayName, req.boardGroupId);
+  }
+
+  // Edit a card's title/description/assignee (fixes a bad LINE parse without losing the card).
+  @Patch(':id')
+  update(@Param('id') id: string, @Body() dto: UpdateTaskDto, @Req() req: BoardRequest) {
+    return this.tasks.update(id, dto, req.boardGroupId);
+  }
+
+  // Soft-delete a card — it disappears from the board but the row is kept for history.
+  @Delete(':id')
+  remove(@Param('id') id: string, @Req() req: BoardRequest) {
+    return this.tasks.remove(id, req.boardGroupId);
   }
 }

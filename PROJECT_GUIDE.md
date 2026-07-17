@@ -162,14 +162,14 @@ Current limitations:
 - A single shared password authenticates everyone; there is no per-user identity on the board (assignment identity is supplied by the client).
 - `users.role` exists but is unused.
 - No pagination; the board loads all tasks in all groups (multi-group data is stored but the board does not filter by group).
-- Cards cannot be edited or deleted from the board.
+- Card edit (`PATCH /tasks/:id`) covers title/description/assignee only — priority and due-date are not yet editable from the board.
 - Push notifications consume LINE OA quota (~300/month on the free plan) — tune `NOTIFY_STATUSES` accordingly.
 
 Planned next — see [docs/ROADMAP.md](docs/ROADMAP.md) for the full prioritized backlog with code
 pointers and acceptance criteria (written for handoff):
 
 - **P0 (before multi-team use):** LINE Login (real board identity) + per-group board isolation
-- **P1:** edit/delete cards from the board; weekly statistics and summaries posted to the group
+- **P1:** weekly statistics and summaries posted to the group
 - **P2:** structured logging/metrics; run e2e in CI
 
 ## 11. Troubleshooting

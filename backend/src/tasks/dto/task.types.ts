@@ -21,6 +21,7 @@ export interface Task {
   position: number;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null; // soft-delete marker; non-null tasks are excluded from board queries
 }
 
 // Data produced by the extractor before it becomes an actual database row.
@@ -57,4 +58,25 @@ export class AssignDto {
   @IsOptional()
   @IsString()
   displayName?: string; // for board members not yet present in the users table
+}
+
+// Edit a card's title/description/assignee. All fields optional — only supplied fields change.
+export class UpdateTaskDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  title?: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  assigneeId?: string;
+
+  @IsOptional()
+  @IsString()
+  assigneeName?: string; // for board members not yet present in the users table (same as AssignDto)
 }

@@ -59,3 +59,26 @@ export async function assignTask(id: string, userId: string, displayName: string
   });
   return handle(res, 'รับงานไม่สำเร็จ');
 }
+
+// Edit a card's title/description (fixes a bad LINE parse without losing the card).
+export async function updateTask(
+  id: string,
+  patch: { title?: string; description?: string },
+): Promise<Task> {
+  const res = await fetch(`${BASE}/tasks/${id}`, {
+    method: 'PATCH',
+    headers: headers(),
+    body: JSON.stringify(patch),
+  });
+  return handle(res, 'แก้ไขการ์ดไม่สำเร็จ');
+}
+
+// Soft-delete a card — it disappears from the board but the row is kept for history.
+export async function deleteTask(id: string): Promise<void> {
+  const res = await fetch(`${BASE}/tasks/${id}`, {
+    method: 'DELETE',
+    headers: headers(),
+  });
+  if (res.status === 401) throw new AuthError();
+  if (!res.ok) throw new Error('ลบการ์ดไม่สำเร็จ');
+}

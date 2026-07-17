@@ -258,3 +258,86 @@ test('multi-group ordering: group-relative move index is scoped to the group', a
   await db.query('DELETE FROM tasks WHERE group_id = ANY($1)', [[groupA, groupB]]);
   await db.query('DELETE FROM line_messages WHERE message_id = ANY($1)', [[msgA, msgB]]);
 });
+
+// L3 — card edit. update() changes only the supplied fields and leaves the rest untouched.
+test('update() edits title/description/assignee and leaves omitted fields untouched', async () => {
+  const task = await repo.createTask(newInput('bad parse'));
+  await repo.upsertUser(`assignee_${RUN}`, 'Assignee One');
+
+  const titleOnly = await repo.update(task.id, { title: 'fixed title' });
+  assert.equal(titleOnly?.title, 'fixed title');
+  assert.equal(titleOnly?.description, 'bad parse', 'description untouched by a title-only edit');
+
+  const withAssignee = await repo.update(task.id, {
+    description: 'fixed description',
+    assigneeId: `assignee_${RUN}`,
+  });
+  assert.equal(withAssignee?.description, 'fixed description');
+  assert.equal(withAssignee?.assignee_id, `assignee_${RUN}`);
+  assert.equal(withAssignee?.title, 'fixed title', 'title untouched by this second edit');
+});
+
+// L3 — cross-group edit is denied, same IDOR rule as updateStatus/move/assign.
+test('update() cross-group edit is denied (IDOR fix)', async () => {
+  const groupA = `euA_${RUN}`;
+  const groupB = `euB_${RUN}`;
+  const msgA = `eumA_${RUN}`;
+  const msgB = `eumB_${RUN}`;
+  await repo.saveMessage(msgA, groupA, userId, 'seed A');
+  await repo.saveMessage(msgB, groupB, userId, 'seed B');
+  const taskB = await repo.createTask(
+    { title: 'B secret', description: 'B', groupId: groupB, sourceMessageId: msgB, createdBy: userId },
+    groupB,
+  );
+
+  assert.equal(await repo.update(taskB.id, { title: 'hijacked' }, groupA), null, 'update cross-group denied');
+  const afterB = await repo.findById(taskB.id, groupB);
+  assert.equal(afterB?.title, 'B secret', 'title unchanged by cross-group attempt');
+
+  await db.query('DELETE FROM tasks WHERE group_id = ANY($1)', [[groupA, groupB]]);
+  await db.query('DELETE FROM line_messages WHERE message_id = ANY($1)', [[msgA, msgB]]);
+});
+
+// L3 — card soft-delete. Deleted cards vanish from findAll/findById but the row survives.
+test('softDelete() hides a card from findAll/findById but keeps the row (soft-delete, not hard)', async () => {
+  const task = await repo.createTask(newInput('to be deleted'));
+  const before = (await repo.findAll()).some((t) => t.id === task.id);
+  assert.equal(before, true, 'card visible before delete');
+
+  const deleted = await repo.softDelete(task.id);
+  assert.equal(deleted?.id, task.id);
+
+  const after = (await repo.findAll()).some((t) => t.id === task.id);
+  assert.equal(after, false, 'card excluded from findAll after soft-delete');
+  assert.equal(await repo.findById(task.id), null, 'findById also excludes a soft-deleted card');
+
+  const raw = await db.query('SELECT deleted_at FROM tasks WHERE id = $1', [task.id]);
+  assert.notEqual(raw[0]?.deleted_at, null, 'row still exists in the database (history preserved)');
+
+  // Deleting again affects zero rows (already deleted) → null, not a second success.
+  assert.equal(await repo.softDelete(task.id), null, 'double-delete is a no-op, not an error');
+
+  // A deleted card can no longer be edited either — it 404s like any other missing task.
+  assert.equal(await repo.update(task.id, { title: 'resurrect?' }), null, 'cannot edit a deleted card');
+});
+
+// L3 — cross-group delete is denied, same IDOR rule as the other mutators.
+test('softDelete() cross-group delete is denied (IDOR fix)', async () => {
+  const groupA = `dA_${RUN}`;
+  const groupB = `dB_${RUN}`;
+  const msgA = `dmA_${RUN}`;
+  const msgB = `dmB_${RUN}`;
+  await repo.saveMessage(msgA, groupA, userId, 'seed A');
+  await repo.saveMessage(msgB, groupB, userId, 'seed B');
+  const taskB = await repo.createTask(
+    { title: 'B secret', description: 'B', groupId: groupB, sourceMessageId: msgB, createdBy: userId },
+    groupB,
+  );
+
+  assert.equal(await repo.softDelete(taskB.id, groupA), null, 'soft-delete cross-group denied');
+  const afterB = await repo.findById(taskB.id, groupB);
+  assert.ok(afterB, 'group B task still exists and is visible to its own group');
+
+  await db.query('DELETE FROM tasks WHERE group_id = ANY($1)', [[groupA, groupB]]);
+  await db.query('DELETE FROM line_messages WHERE message_id = ANY($1)', [[msgA, msgB]]);
+});

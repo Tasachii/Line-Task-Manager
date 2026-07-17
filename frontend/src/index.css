@@ -111,8 +111,33 @@ body {
 .card:hover { box-shadow: 0 2px 4px rgba(33,29,23,0.08), 0 8px 22px rgba(33,29,23,0.09); }
 .card--overlay { transform: rotate(2deg); cursor: grabbing; }
 
+.card__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
 .card__title { margin: 0; font-weight: 500; font-size: 14.5px; line-height: 1.4; }
 .card__desc { margin: 6px 0 0; font-size: 13px; color: var(--ink-soft); line-height: 1.45; }
+
+.card__actions { display: flex; gap: 2px; flex-shrink: 0; }
+.card__icon-btn {
+  background: transparent; border: none; border-radius: 6px;
+  font-size: 12px; line-height: 1; padding: 3px 5px; cursor: pointer;
+  opacity: 0.55; transition: opacity 0.12s, background 0.12s;
+}
+.card__icon-btn:hover { opacity: 1; background: rgba(33, 29, 23, 0.06); }
+
+.card--editing { cursor: default; display: flex; flex-direction: column; gap: 8px; }
+.card__edit-input, .card__edit-textarea {
+  font-family: var(--font-body); font-size: 13.5px; color: var(--ink);
+  background: var(--paper); border: 1.5px solid var(--line); border-radius: 7px;
+  padding: 7px 9px; outline: none; resize: vertical; width: 100%;
+}
+.card__edit-input:focus, .card__edit-textarea:focus { border-color: var(--ink); }
+.card__edit-actions { display: flex; gap: 8px; }
+.card__cancel {
+  font-family: var(--font-display); font-size: 12px; font-weight: 600;
+  color: var(--ink-soft); background: transparent;
+  border: 1.5px solid var(--line); border-radius: 7px;
+  padding: 4px 12px; cursor: pointer; transition: all 0.12s;
+}
+.card__cancel:hover { border-color: var(--ink); color: var(--ink); }
 
 .card__meta { margin-top: 11px; display: flex; align-items: center; min-height: 24px; }
 .card__assignee {

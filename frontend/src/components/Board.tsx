@@ -13,7 +13,7 @@ import {
 } from '@dnd-kit/core';
 import { arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 import { COLUMNS, Task, TaskStatus } from '../types';
-import { assignTask, fetchTasks, moveTask } from '../api';
+import { assignTask, deleteTask, fetchTasks, moveTask, updateTask } from '../api';
 import { getSocket } from '../socket';
 import { Column } from './Column';
 import { TaskCard } from './TaskCard';
@@ -46,6 +46,9 @@ export function Board({ currentMember }: Props) {
     const onCreated = (task: Task) => setTasks((prev) => [...prev, task]);
     const onUpdated = (task: Task) =>
       setTasks((prev) => prev.map((t) => (t.id === task.id ? task : t)));
+    // Card was soft-deleted elsewhere — remove it from the board (idempotent: harmless if already gone).
+    const onDeleted = ({ id }: { id: string }) =>
+      setTasks((prev) => prev.filter((t) => t.id !== id));
     // Multiple cards reordered simultaneously — refetch the board (skip if dragging to prevent card jitter)
     const onRefresh = () => {
       if (!dragging.current) fetchTasks().then(setTasks).catch(() => undefined);
@@ -58,12 +61,14 @@ export function Board({ currentMember }: Props) {
 
     socket.on('task:created', onCreated);
     socket.on('task:updated', onUpdated);
+    socket.on('task:deleted', onDeleted);
     socket.on('tasks:refresh', onRefresh);
     socket.on('disconnect', onDisconnect);
     socket.on('connect', onConnect);
     return () => {
       socket.off('task:created', onCreated);
       socket.off('task:updated', onUpdated);
+      socket.off('task:deleted', onDeleted);
       socket.off('tasks:refresh', onRefresh);
       socket.off('disconnect', onDisconnect);
       socket.off('connect', onConnect);
@@ -140,6 +145,26 @@ export function Board({ currentMember }: Props) {
     }
   }
 
+  // Fixes a bad LINE parse (title/description) without losing the card's history.
+  async function handleEdit(task: Task, patch: { title: string; description: string }) {
+    try {
+      await updateTask(task.id, patch);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function handleDelete(task: Task) {
+    try {
+      await deleteTask(task.id);
+      // Remove immediately in the actor's own tab; the task:deleted broadcast handles other tabs
+      // (and is a harmless no-op here since the id is already gone).
+      setTasks((prev) => prev.filter((t) => t.id !== task.id));
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
   const activeTask = tasks.find((t) => t.id === activeId) ?? null;
 
   return (
@@ -161,11 +186,15 @@ export function Board({ currentMember }: Props) {
               label={col.label}
               tasks={tasks.filter((t) => t.status === col.status)}
               onAssign={handleAssign}
+              onEdit={handleEdit}
+              onDelete={handleDelete}
             />
           ))}
         </div>
         <DragOverlay>
-          {activeTask ? <TaskCard task={activeTask} onAssign={() => {}} overlay /> : null}
+          {activeTask ? (
+            <TaskCard task={activeTask} onAssign={() => {}} onEdit={async () => {}} onDelete={() => {}} overlay />
+          ) : null}
         </DragOverlay>
       </DndContext>
     </>
