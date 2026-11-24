@@ -1,4 +1,4 @@
--- Stores raw LINE messages as the source of record for tasks.
+-- Claims LINE message IDs for deduplication. Content is retained only for messages that create tasks.
 CREATE TABLE IF NOT EXISTS line_messages (
   message_id  TEXT PRIMARY KEY,            -- messageId from LINE (prevents duplicates on webhook retry)
   group_id    TEXT NOT NULL,

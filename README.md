@@ -110,6 +110,7 @@ created without a due date and the confirmation reply explains that the invalid 
 
 > Without `ANTHROPIC_API_KEY`, only `/task` messages create cards — plain conversation is ignored.
 > With the key set, the AI also classifies keyword-free messages that describe work.
+> For deduplication, ignored conversation retains only its LINE message ID and metadata; its text is not stored.
 
 ---
 
@@ -196,7 +197,7 @@ CI runs three jobs on every push and pull request. **backend** (build + unit tes
 | Card ordering | A `position` column persists in-column order across moves, inserts, and page refreshes |
 | Ordering integrity | Position writes run in a transaction serialized on a per-column PostgreSQL advisory lock — concurrent edits cannot corrupt order |
 | Per-group key model | `BOARD_GROUPS` maps each LINE `group_id` to its own board key; `GET /tasks` and the WebSocket room are both scoped to that group, so key A never exposes group B's data |
-| Duplicate prevention | `message_id` checked before insert absorbs LINE webhook retries — the same message is never stored twice |
+| Duplicate prevention | `message_id` is claimed atomically to absorb LINE webhook retries — the same message never creates cards twice; ignored chat bodies are not retained |
 | AI failure | Extraction errors and timeouts return 503 so LINE retries the webhook; message-ID deduplication prevents successfully handled events from creating duplicate cards |
 | Rate limiting | Per-IP throttle on the board API; the LINE webhook and `/health` are exempt |
 | Prod startup guard | `assertProdConfig` refuses to boot in production without board auth, explicit `CORS_ORIGIN`, and a non-empty `LINE_CHANNEL_SECRET` |

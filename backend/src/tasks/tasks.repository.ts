@@ -34,12 +34,13 @@ export class TasksRepository {
     scopeGroupId?: string,
   ): Promise<Task[] | null> {
     return this.db.withTransaction(async (q) => {
+      const storedContent = inputs.length > 0 ? message.content : '';
       const claimed = await q<{ message_id: string }>(
         `INSERT INTO line_messages (message_id, group_id, user_id, content)
          VALUES ($1, $2, $3, $4)
          ON CONFLICT (message_id) DO NOTHING
          RETURNING message_id`,
-        [message.messageId, message.groupId, message.userId, message.content],
+        [message.messageId, message.groupId, message.userId, storedContent],
       );
       if (claimed.length === 0) return null;
       if (inputs.length === 0) return [];

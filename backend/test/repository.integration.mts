@@ -147,6 +147,30 @@ test('concurrent message intake atomically creates one task set', async () => {
   await db.query('DELETE FROM line_messages WHERE message_id = $1', [concurrentMessageId]);
 });
 
+test('ordinary chat stores only its message claim, without the message body', async () => {
+  const ordinaryMessageId = `ordinary_${RUN}`;
+  const claimed = await repo.claimMessageAndCreateTasks(
+    {
+      messageId: ordinaryMessageId,
+      groupId,
+      userId,
+      content: 'สวัสดีครับ วันนี้กินข้าวยัง',
+    },
+    [],
+    groupId,
+  );
+
+  assert.deepEqual(claimed, []);
+  const messages = await db.query<{ content: string }>(
+    'SELECT content FROM line_messages WHERE message_id = $1',
+    [ordinaryMessageId],
+  );
+  assert.equal(messages.length, 1, 'message id is retained for deduplication');
+  assert.equal(messages[0].content, '', 'ordinary chat body is not retained');
+
+  await db.query('DELETE FROM line_messages WHERE message_id = $1', [ordinaryMessageId]);
+});
+
 test('failed intake rolls back its claim so a retry can succeed', async () => {
   const retryMessageId = `retry_${RUN}`;
   const message = {
