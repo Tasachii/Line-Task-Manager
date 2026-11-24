@@ -2,7 +2,7 @@
 // transaction + advisory-lock changes that protect card `position` ordering under concurrency.
 //
 // Requires a reachable database. Run from source via tsx:
-//   docker compose up -d && npm run migrate && npm run test:integration
+//   docker compose -f ../docker-compose.dev.yml up -d && npm run migrate && npm run test:integration
 // DATABASE_URL defaults to the docker-compose dev database.
 import 'reflect-metadata';
 import test, { before, after } from 'node:test';

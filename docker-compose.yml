@@ -1,13 +1,12 @@
 services:
+  # Production database, reachable only from the internal Compose network.
   db:
+    profiles: ["full"]
     image: postgres:16-alpine
-    container_name: ltm_postgres
     environment:
       POSTGRES_USER: line
-      POSTGRES_PASSWORD: line
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before starting the full profile}
       POSTGRES_DB: line_task_manager
-    ports:
-      - "5432:5432"
     volumes:
       - ltm_pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -27,11 +26,10 @@ services:
     env_file:
       - backend/.env # place LINE_CHANNEL_SECRET / LINE_CHANNEL_ACCESS_TOKEN / BOARD_PASSWORD here
     environment:
-      # Override to point at the db service inside the compose network (overrides localhost value in .env)
-      DATABASE_URL: postgres://line:line@db:5432/line_task_manager
+      # PGPASSWORD supplies the password separately so reserved URL characters remain safe.
+      DATABASE_URL: postgres://line@db:5432/line_task_manager
+      PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD before starting the full profile}
       PORT: 3000
-    ports:
-      - "3000:3000"
     depends_on:
       db:
         condition: service_healthy

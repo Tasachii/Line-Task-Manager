@@ -89,7 +89,8 @@ migrations/                      # numbered SQL files, applied in order
 docs/
   01-architecture/00-system-design.md
   flows/                         # interactive HTML + Mermaid flow diagrams
-docker-compose.yml               # db (default) + backend/frontend ("full" profile)
+docker-compose.dev.yml           # local PostgreSQL published on :5432
+docker-compose.yml               # internal db/backend + nginx ("full" production profile)
 .github/workflows/ci.yml         # backend and frontend jobs
 ```
 
@@ -97,7 +98,7 @@ docker-compose.yml               # db (default) + backend/frontend ("full" profi
 
 Tables are created by plain SQL files in `migrations/`, applied in filename order by `npm run migrate` (also run automatically on container startup). Migrations are idempotent (`IF NOT EXISTS`); there is no down-migration or version table.
 
-- `line_messages` — raw inbound messages; `message_id` (PK) doubles as the webhook dedupe key.
+- `line_messages` — webhook dedupe claims; `message_id` is the PK, and content is retained only for messages that create tasks.
 - `users` — known LINE users; `id` equals `line_user_id` for now; `role` is `member` or `admin` (role is not yet enforced anywhere).
 - `tasks` — the cards. Key fields: `status` (`todo | in_process | test | done`), `position` (integer order within a column), `priority` (`low | medium | high`, nullable), `due_date` (nullable), `assignee_id`/`created_by` (FK to users), `source_message_id` (FK to line_messages).
 
@@ -124,21 +125,21 @@ All backend configuration is environment variables read directly via `process.en
 ## 8. Development Workflow
 
 ```bash
-docker compose up -d                  # PostgreSQL only
+docker compose -f docker-compose.dev.yml up -d   # PostgreSQL only
 cd backend && npm install && cp .env.example .env && npm run migrate
 npm run start:dev                     # NestJS watch mode on :3000
 cd ../frontend && npm install && npm run dev   # Vite on :5173
 ```
 
 - To exercise the webhook without LINE, POST to `/webhook` with a computed signature, or run the backend with `LINE_CHANNEL_SECRET=test_secret` and use the e2e script's helper as a reference (`frontend/scripts/e2e.mjs` signs payloads with HMAC-SHA256).
-- The full-stack deployment (`docker compose --profile full`) maps backend `:3000` and nginx `:8080`. In development, Vite proxies REST calls to the backend, so no CORS configuration is needed locally.
+- The full-stack deployment (`docker compose --profile full`) publishes only nginx on `:8080`; PostgreSQL and the backend stay on the internal network. In development, Vite proxies REST calls to the backend, so no CORS configuration is needed locally.
 
 ### Testing
 
 | Suite | Command | Requirements |
 |---|---|---|
 | Backend unit | `cd backend && npm run build && npm test` | None (tests run against `dist/`) — build first |
-| Backend integration | `cd backend && npm run test:integration` | Build first; Postgres up and migrated (`docker compose up -d && npm run migrate`). Covers `position` ordering and concurrency of `createTask`/`move` against a real database |
+| Backend integration | `cd backend && npm run test:integration` | Build first; Postgres up via `docker compose -f docker-compose.dev.yml up -d` and migrated with `npm run migrate`. Covers `position` ordering and concurrency of `createTask`/`move` against a real database |
 | Frontend types/build | `cd frontend && npm run build` | None |
 | End-to-end | `cd frontend && npm run test:e2e` | Backend on `:3000` with `LINE_CHANNEL_SECRET=test_secret`, Postgres up, Vite dev server on `:5173`, Chrome installed |
 

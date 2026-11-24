@@ -33,7 +33,8 @@ A single deployment handles one or more LINE groups. Each message that contains 
 | `frontend/` | React + Vite Kanban SPA with `nginx.conf` for production |
 | `migrations/` | SQL migrations (`line_messages`, `users`, `tasks`) |
 | `docs/` | Architecture doc, interactive flow diagrams, roadmap |
-| `docker-compose.yml` | PostgreSQL for dev; full stack via `--profile full` |
+| `docker-compose.dev.yml` | Local PostgreSQL published on `:5432` for development |
+| `docker-compose.yml` | Production stack via `--profile full`; only nginx is published |
 | `.github/workflows/ci.yml` | CI: backend · frontend (required gates) · e2e (best-effort) |
 
 ---
@@ -63,7 +64,7 @@ copy backend\.env.example backend\.env  :: fill in LINE credentials (see Configu
 ### Development
 
 ```bash
-docker compose up -d                    # start PostgreSQL on :5432
+docker compose -f docker-compose.dev.yml up -d   # start PostgreSQL on :5432
 
 # Backend (separate terminal)
 cd backend
@@ -80,10 +81,33 @@ npm run dev                             # Vite dev server on :5173
 ### Production (Docker)
 
 ```bash
+export POSTGRES_PASSWORD='choose-a-strong-database-password'
 docker compose --profile full up -d --build   # PostgreSQL + backend + nginx on :8080
 ```
 
-The backend waits for the database, runs migrations automatically on startup, and exposes a health check at `/health`. Point your domain or ngrok tunnel at `:8080` — both the Kanban board and the LINE webhook are served from that single endpoint.
+The full profile requires `POSTGRES_PASSWORD` and publishes only nginx on `:8080`; PostgreSQL and
+the backend remain on the internal Compose network. The backend waits for the database, runs
+migrations automatically on startup, and exposes its health check through nginx. Point your domain
+or ngrok tunnel at `:8080` — both the Kanban board and the LINE webhook use that single endpoint.
+
+### Upgrading an existing production data volume
+
+PostgreSQL applies `POSTGRES_PASSWORD` only when it creates a new data directory. For an existing
+`ltm_pgdata` volume, start only the internal production database, then update the existing `line`
+user's password through its local socket. Enter the same value at the prompt that you exported:
+
+```bash
+printf 'New database password: '
+IFS= read -r -s POSTGRES_PASSWORD
+printf '\n'
+export POSTGRES_PASSWORD
+docker compose --profile full up -d db
+docker compose --profile full exec db psql -U line -d line_task_manager -c '\password line'
+docker compose --profile full up -d --build
+```
+
+The hidden prompt keeps the password out of shell history. Run these commands from the same
+checkout and keep the same Compose project name so it reuses the existing named volume.
 
 ---
 
@@ -176,7 +200,7 @@ cd backend && npm run test:cov
 # Integration tests — 6 tests against a real PostgreSQL instance.
 # Covers position ordering, advisory-lock concurrency, idempotent saveMessage,
 # and findAll group scoping. Requires Postgres up and migrated.
-docker compose up -d
+docker compose -f docker-compose.dev.yml up -d
 cd backend && npm run migrate && npm run test:integration
 
 # End-to-end tests — Puppeteer/Chrome: board rendering, realtime updates,
