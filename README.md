@@ -196,7 +196,7 @@ BOARD_GROUPS={"Cabc123...":"keyA","Cdef456...":"keyB"}
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| `POST` | `/webhook` | LINE HMAC signature | Receives events from the LINE platform |
+| `POST` | `/webhook` | LINE HMAC signature | Receives events; returns 200 after durable intake and 503 for retryable processing failures |
 | `GET` | `/health` | None | Health check including database connectivity |
 | `GET` | `/tasks` | `x-board-key` | List tasks ordered by column position; scoped to the key's group when `BOARD_GROUPS` is set |
 | `PATCH` | `/tasks/:id/status` | `x-board-key` | Change status — card is appended to the target column |
@@ -225,8 +225,9 @@ cd backend && npm run test:cov
 docker compose -f docker-compose.dev.yml up -d
 cd backend && npm run migrate && npm run test:integration
 
-# End-to-end tests — Puppeteer/Chrome: board rendering, realtime updates,
-# drag-and-drop, and the 400-on-bad-signature gate.
+# End-to-end tests — Puppeteer/Chrome: real board rendering, realtime updates,
+# drag-and-drop, invalid-date intake, and the signature gate. CI replaces only
+# the external LINE HTTPS calls with an in-process stand-in.
 # Requires backend on :3000 (LINE_CHANNEL_SECRET=test_secret) and Vite on :5173.
 cd frontend && npm run test:e2e
 ```

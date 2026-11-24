@@ -2,6 +2,8 @@ import {
   BadRequestException,
   Controller,
   Headers,
+  HttpCode,
+  HttpStatus,
   Post,
   Req,
   RawBodyRequest,
@@ -23,6 +25,7 @@ export class WebhookController {
   ) {}
 
   @Post()
+  @HttpCode(HttpStatus.OK)
   async receive(
     @Req() req: RawBodyRequest<Request>,
     @Headers('x-line-signature') signature: string,

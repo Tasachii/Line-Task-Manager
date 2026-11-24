@@ -99,12 +99,13 @@ jobs:
         working-directory: backend
         env:
           LINE_CHANNEL_SECRET: test_secret
+          LINE_CHANNEL_ACCESS_TOKEN: e2e_fake_token
           PORT: '3000'
         run: |
           npm ci
           npm run build
           npm run migrate
-          node dist/main.js &
+          NODE_ENV=test node --import ./test/line-api-standin.mjs dist/main.js &
           echo "BACKEND_PID=$!" >> "$GITHUB_ENV"
       - name: Wait for backend health
         run: |

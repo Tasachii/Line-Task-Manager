@@ -8,6 +8,10 @@ export default defineConfig({
     // Proxy /tasks to the backend in dev (avoids CORS)
     proxy: {
       '/tasks': 'http://localhost:3000',
+      '/socket.io': {
+        target: 'http://localhost:3000',
+        ws: true,
+      },
     },
   },
 });
