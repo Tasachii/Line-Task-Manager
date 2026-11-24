@@ -39,13 +39,13 @@ In production every component runs in Docker, and nginx (in the frontend contain
 - Drag and drop calls `PATCH /tasks/:id/move` with `{status, index}`. The repository renumbers positions in the affected column. A status-only change (`PATCH /tasks/:id/status`) appends to the end of the target column.
 - All position writes (`createTask`, `move`, `updateStatus`) run inside a transaction (`DatabaseService.withTransaction`) and take a per-column `pg_advisory_xact_lock`. This serializes concurrent writers on the same Kanban column so two simultaneous drags or intakes can never compute the same `position` or interleave a renumber — different columns never block each other.
 - Assignment (`POST /tasks/:id/assign`) upserts the user first when a `displayName` is provided; an unknown user without a display name returns 400 rather than surfacing a foreign-key error as 500.
-- LINE push notifications are fire-and-forget (`void` promises): a LINE API failure never fails the board API call. Cross-column moves notify the group only if the target status is in `NOTIFY_STATUSES`; assignment notices are controlled by `NOTIFY_ASSIGN`.
+- LINE push notifications use a PostgreSQL outbox committed in the same transaction as the card mutation. Delivery retries in the background with a stable LINE retry key, so LINE downtime never rolls back the board change. `/health` reports pending and terminally failed counts. Cross-column moves notify the group only if the target status is in `NOTIFY_STATUSES`; assignment notices are controlled by `NOTIFY_ASSIGN`.
 
 ## 3. Tech Stack
 
 | Layer | Technology | Notes |
 |---|---|---|
-| Backend | NestJS 10 (Express), TypeScript | Modules: webhook, tasks, line, realtime, database, health, auth |
+| Backend | NestJS 11 (Express), TypeScript | Modules: webhook, tasks, line, notifications, realtime, database, health, auth |
 | LINE | `@line/bot-sdk` v11 | Signature validation, reply, push, group member profile |
 | AI | `@anthropic-ai/sdk` | Optional; JSON-schema structured output; default model `claude-haiku-4-5` (override with `AI_EXTRACT_MODEL`) |
 | Database | PostgreSQL 16, raw SQL via `pg` | No ORM; queries live in repositories |
@@ -102,6 +102,7 @@ Tables are created by plain SQL files in `migrations/`, applied in filename orde
 - `line_messages` — webhook dedupe claims; `message_id` is the PK, and content is retained only for messages that create tasks.
 - `users` — known LINE users; `id` equals `line_user_id` for now; `role` is `member` or `admin` (role is not yet enforced anywhere).
 - `tasks` — the cards. Key fields: `status` (`todo | in_process | test | done`), `position` (integer order within a column), `priority` (`low | medium | high`, nullable), `due_date` (nullable), `assignee_id`/`created_by` (FK to users), `source_message_id` (FK to line_messages).
+- `notification_outbox` — pending or terminally failed LINE pushes. The row ID is also the stable LINE retry key; delivered rows are removed.
 
 Adding a column: create a new numbered migration file; never edit an applied one.
 
@@ -152,7 +153,7 @@ CI (`.github/workflows/ci.yml`) runs backend build + unit tests + integration te
 
 - **Language**: code, comments, commit messages, and docs in English. End-user copy — LINE bot messages, push notifications, the AI extraction prompt, and board UI labels — is intentionally Thai; do not translate it.
 - **No ORM**: SQL lives in repository classes (`tasks.repository.ts`). Keep queries there, not in services.
-- **Error philosophy**: the webhook returns 200 only after every verified event is handled successfully. Processing failures are logged and produce HTTP 503 so LINE retries; message-ID deduplication makes repeated delivery safe. LINE pushes are fire-and-forget. Board API errors, by contrast, should be explicit (400/404) rather than leaking as 500s.
+- **Error philosophy**: the webhook returns 200 only after every verified event is handled successfully. Processing failures are logged and produce HTTP 503 so LINE retries; message-ID deduplication makes repeated delivery safe. LINE pushes are delivered from the durable outbox after the board transaction commits. Board API errors, by contrast, should be explicit (400/404) rather than leaking as 500s.
 - **Realtime**: any mutation that changes a single task emits `task:created`/`task:updated`; anything that renumbers positions emits `tasks:refresh`.
 - **Thai text handling**: use grapheme-aware operations (`Intl.Segmenter`) when slicing user text; never `substring` Thai strings.
 - **Commits**: imperative, descriptive subject lines; no AI attribution trailers.

@@ -11,21 +11,23 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express from 'express';
+import { Pool } from 'pg';
 import { HttpException } from '@nestjs/common';
 import { fakeConfig } from './helpers/config.mts';
 
-process.env.DATABASE_URL =
-  process.env.DATABASE_URL ?? 'postgres://line:line@localhost:5432/line_task_manager';
+process.env.DATABASE_URL = process.env.DATABASE_URL ?? 'postgres://line:line@localhost:5432/line_task_manager';
 
 const { DatabaseService } = await import('../src/database/database.service');
 const { TasksRepository } = await import('../src/tasks/tasks.repository');
+const { NotificationOutboxRepository } = await import('../src/notifications/notification-outbox.repository');
 const { TasksService } = await import('../src/tasks/tasks.service');
 const { TaskExtractionService } = await import('../src/tasks/task-extraction.service');
 const { WebhookService } = await import('../src/webhook/webhook.service');
 const { WebhookController } = await import('../src/webhook/webhook.controller');
 
 const db = new DatabaseService();
-const repo = new TasksRepository(db);
+const notificationRepo = new NotificationOutboxRepository(db);
+const repo = new TasksRepository(db, notificationRepo);
 
 // Unique namespace per run so parallel/previous runs don't interfere.
 const RUN = `it_${Date.now()}_${Math.floor(Math.random() * 1e6)}`;
@@ -50,6 +52,7 @@ before(async () => {
 
 after(async () => {
   // Remove everything this run created, then close the pool.
+  await db.query('DELETE FROM notification_outbox WHERE group_id = $1', [groupId]);
   await db.query('DELETE FROM tasks WHERE group_id = $1', [groupId]);
   await db.query('DELETE FROM line_messages WHERE message_id = $1', [messageId]);
   await db.query('DELETE FROM users WHERE id = $1', [userId]);
@@ -67,9 +70,7 @@ test('sequential createTask appends with strictly increasing positions', async (
 
 test('concurrent createTask never assign the same position (advisory lock holds)', async () => {
   const N = 12;
-  const created = await Promise.all(
-    Array.from({ length: N }, (_, i) => repo.createTask(newInput(`conc ${i}`))),
-  );
+  const created = await Promise.all(Array.from({ length: N }, (_, i) => repo.createTask(newInput(`conc ${i}`))));
   const positions = created.map((t) => t.position);
   const unique = new Set(positions);
   assert.equal(unique.size, positions.length, `expected ${N} distinct positions, got ${[...unique].sort((x, y) => x - y).join(',')}`);
@@ -81,20 +82,135 @@ test('move renumbers the target column to a clean 0..n-1 sequence', async () => 
   for (const t of todo) {
     await repo.move(t.id, 'test', 0);
   }
-  const inTest = (await repo.findAll())
-    .filter((t) => t.group_id === groupId && t.status === 'test')
-    .sort((a, b) => a.position - b.position);
+  const inTest = (await repo.findAll()).filter((t) => t.group_id === groupId && t.status === 'test').sort((a, b) => a.position - b.position);
   assert.equal(inTest.length, todo.length);
   inTest.forEach((t, i) => assert.equal(t.position, i, `position[${i}] should be ${i}`));
+});
+
+test('task move and notification outbox insert commit atomically', async () => {
+  const task = await repo.createTask(newInput('atomic notification'));
+  const moved = await repo.move(task.id, 'in_process', 0, undefined, (updated) => `moved ${updated.title}`);
+  assert.equal(moved?.status, 'in_process');
+
+  const queued = await db.query<{
+    id: string;
+    retry_key: string;
+    message_text: string;
+  }>('SELECT id, retry_key, message_text FROM notification_outbox WHERE group_id = $1', [groupId]);
+  assert.equal(queued.length, 1);
+  assert.equal(queued[0].id, queued[0].retry_key, 'row id doubles as the stable LINE retry key');
+  assert.equal(queued[0].message_text, 'moved atomic notification');
+  await db.query('DELETE FROM notification_outbox WHERE id = $1', [queued[0].id]);
+});
+
+test('notification claims are exclusive, fenced, counted, and recover an interrupted final attempt', async () => {
+  const schema = `notification_test_${RUN}`;
+  await db.query(`CREATE SCHEMA "${schema}"`);
+  const isolatedPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    options: `-c search_path=${schema}`,
+  });
+  try {
+    await db.query(
+      `CREATE TABLE "${schema}".notification_outbox
+       (LIKE public.notification_outbox INCLUDING ALL)`,
+    );
+    const isolatedDb = {
+      async query(sql: string, params: unknown[] = []) {
+        return (await isolatedPool.query(sql, params)).rows;
+      },
+      async withTransaction<T>(fn: (query: (sql: string, params?: unknown[]) => Promise<any[]>) => Promise<T>) {
+        const client = await isolatedPool.connect();
+        const query = async (sql: string, params: unknown[] = []) => (await client.query(sql, params)).rows;
+        try {
+          await client.query('BEGIN');
+          const result = await fn(query);
+          await client.query('COMMIT');
+          return result;
+        } catch (error) {
+          await client.query('ROLLBACK');
+          throw error;
+        } finally {
+          client.release();
+        }
+      },
+    };
+    const outbox = new NotificationOutboxRepository(isolatedDb as never);
+    const enqueue = async (text: string) => isolatedDb.withTransaction((query) => outbox.enqueueWith(query as never, groupId, text));
+    const firstId = await enqueue('claim fencing');
+    await isolatedDb.query(
+      `UPDATE notification_outbox
+     SET created_at = '2000-01-01T00:00:00Z', next_attempt_at = now()
+     WHERE id = $1`,
+      [firstId],
+    );
+
+    const claims = await Promise.all([outbox.claimDue(60_000, 3), outbox.claimDue(60_000, 3)]);
+    const firstClaim = claims.find((claim) => claim?.id === firstId);
+    assert.equal(firstClaim?.id, firstId);
+    assert.equal(firstClaim?.attempts, 1);
+    assert.equal(claims.filter((claim) => claim?.id === firstId).length, 1, 'leased row is claimed once');
+
+    await isolatedDb.query('UPDATE notification_outbox SET next_attempt_at = now() WHERE id = $1', [firstId]);
+    const secondClaim = await outbox.claimDue(60_000, 3);
+    assert.equal(secondClaim?.id, firstId);
+    assert.equal(secondClaim?.attempts, 2, 'claim attempts increase monotonically');
+
+    await outbox.markFailedAttempt(firstId, 1, 'stale failure', true);
+    const afterStaleFailure = await isolatedDb.query('SELECT status, attempts FROM notification_outbox WHERE id = $1', [firstId]);
+    assert.deepEqual(afterStaleFailure[0], { status: 'pending', attempts: 2 });
+
+    await outbox.markFailedAttempt(firstId, 2, 'terminal failure', true);
+    await outbox.markDelivered(firstId);
+    assert.equal((await isolatedDb.query('SELECT 1 FROM notification_outbox WHERE id = $1', [firstId])).length, 0, 'authoritative late success removes a terminal row with the same immutable retry key');
+
+    const permanentId = await enqueue('permanent failure');
+    await isolatedDb.query(
+      `UPDATE notification_outbox
+     SET created_at = '2000-01-02T00:00:00Z', next_attempt_at = now()
+     WHERE id = $1`,
+      [permanentId],
+    );
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const claim = await outbox.claimDue(60_000, 3);
+      assert.equal(claim?.id, permanentId);
+      assert.equal(claim?.attempts, attempt);
+      await outbox.markFailedAttempt(permanentId, attempt, 'LINE unavailable', attempt === 3);
+      if (attempt < 3) {
+        await isolatedDb.query('UPDATE notification_outbox SET next_attempt_at = now() WHERE id = $1', [permanentId]);
+      }
+    }
+    const failedCounts = await outbox.countUndelivered();
+    assert.deepEqual(failedCounts, { pending: 0, failed: 1 }, 'third completed failure is reported');
+    await isolatedDb.query('DELETE FROM notification_outbox WHERE id = $1', [permanentId]);
+
+    const interruptedId = await enqueue('interrupted final attempt');
+    await isolatedDb.query(
+      `UPDATE notification_outbox
+     SET created_at = '2000-01-03T00:00:00Z', next_attempt_at = now()
+     WHERE id = $1`,
+      [interruptedId],
+    );
+    const finalClaim = await outbox.claimDue(1, 1);
+    assert.equal(finalClaim?.id, interruptedId);
+    await new Promise((resolve) => setTimeout(resolve, 3));
+    assert.equal(await outbox.claimDue(1, 1), null, 'configured send limit prevents another claim');
+
+    const interrupted = await isolatedDb.query('SELECT status, attempts FROM notification_outbox WHERE id = $1', [interruptedId]);
+    assert.deepEqual(interrupted[0], { status: 'failed', attempts: 1 });
+    const counts = await outbox.countUndelivered();
+    assert.deepEqual(counts, { pending: 0, failed: 1 }, 'interrupted final attempt is visible as failed');
+  } finally {
+    await isolatedPool.end();
+    await db.query(`DROP SCHEMA "${schema}" CASCADE`);
+  }
 });
 
 test('concurrent moves into one column keep positions distinct and contiguous', async () => {
   const inTest = (await repo.findAll()).filter((t) => t.group_id === groupId && t.status === 'test');
   // Fire concurrent moves into the "done" column, each targeting index 0.
   await Promise.all(inTest.map((t) => repo.move(t.id, 'done', 0)));
-  const done = (await repo.findAll())
-    .filter((t) => t.group_id === groupId && t.status === 'done')
-    .sort((a, b) => a.position - b.position);
+  const done = (await repo.findAll()).filter((t) => t.group_id === groupId && t.status === 'done').sort((a, b) => a.position - b.position);
   assert.equal(done.length, inTest.length);
   const positions = done.map((t) => t.position);
   assert.equal(new Set(positions).size, positions.length, 'positions must be distinct');
@@ -137,10 +253,7 @@ test('concurrent message intake atomically creates one task set', async () => {
   );
 
   assert.equal(attempts.filter((result) => result !== null).length, 1, 'one caller claims the message');
-  const tasks = await db.query(
-    'SELECT id FROM tasks WHERE source_message_id = $1',
-    [concurrentMessageId],
-  );
+  const tasks = await db.query('SELECT id FROM tasks WHERE source_message_id = $1', [concurrentMessageId]);
   assert.equal(tasks.length, 1, 'one task is committed for 20 concurrent deliveries');
 
   await db.query('DELETE FROM tasks WHERE source_message_id = $1', [concurrentMessageId]);
@@ -161,10 +274,7 @@ test('ordinary chat stores only its message claim, without the message body', as
   );
 
   assert.deepEqual(claimed, []);
-  const messages = await db.query<{ content: string }>(
-    'SELECT content FROM line_messages WHERE message_id = $1',
-    [ordinaryMessageId],
-  );
+  const messages = await db.query<{ content: string }>('SELECT content FROM line_messages WHERE message_id = $1', [ordinaryMessageId]);
   assert.equal(messages.length, 1, 'message id is retained for deduplication');
   assert.equal(messages[0].content, '', 'ordinary chat body is not retained');
 
@@ -188,9 +298,7 @@ test('failed intake rolls back its claim so a retry can succeed', async () => {
     createdBy: userId,
   };
 
-  await assert.rejects(
-    repo.claimMessageAndCreateTasks(message, [{ ...input, dueDate: 'not-a-date' }], groupId),
-  );
+  await assert.rejects(repo.claimMessageAndCreateTasks(message, [{ ...input, dueDate: 'not-a-date' }], groupId));
   assert.equal(await repo.messageExists(retryMessageId), false, 'failed transaction releases claim');
 
   const retried = await repo.claimMessageAndCreateTasks(message, [input], groupId);
@@ -218,20 +326,26 @@ test('HTTP webhook stores one task without a due date for an impossible calendar
       return signature === expected;
     },
     getGroupMemberName: async () => 'Integration Tester',
-    replyText: async (_replyToken: string, text: string) => { replies.push(text); },
+    replyText: async (_replyToken: string, text: string) => {
+      replies.push(text);
+    },
     pushToGroup: async () => {},
   };
   const events = { taskCreated: () => {} };
-  const tasks = new TasksService(repo, events as never, line as never, config);
+  const tasks = new TasksService(repo, events as never, config, {
+    kick: () => {},
+  } as never);
   const extractor = new TaskExtractionService(config);
   const webhook = new WebhookService(line as never, tasks, extractor, config);
   const controller = new WebhookController(line as never, webhook);
   const app = express();
-  app.use(express.json({
-    verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
-      req.rawBody = buf;
-    },
-  }));
+  app.use(
+    express.json({
+      verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
   app.post('/webhook', async (req: express.Request & { rawBody?: Buffer }, res) => {
     try {
       res.status(200).json(await controller.receive(req as never, req.header('x-line-signature') as never));
@@ -249,31 +363,33 @@ test('HTTP webhook stores one task without a due date for an impossible calendar
   try {
     const { port } = server.address() as AddressInfo;
     const body = JSON.stringify({
-      events: [{
-        type: 'message',
-        message: {
-          type: 'text',
-          id: invalidDateMessageId,
-          text: '/task ส่งรายงาน @2026-02-30',
+      events: [
+        {
+          type: 'message',
+          message: {
+            type: 'text',
+            id: invalidDateMessageId,
+            text: '/task ส่งรายงาน @2026-02-30',
+          },
+          source: { type: 'group', groupId, userId },
+          replyToken: 'integration-reply',
+          timestamp: Date.now(),
+          mode: 'active',
         },
-        source: { type: 'group', groupId, userId },
-        replyToken: 'integration-reply',
-        timestamp: Date.now(),
-        mode: 'active',
-      }],
+      ],
     });
     const signature = crypto.createHmac('sha256', secret).update(body).digest('base64');
     const response = await fetch(`http://127.0.0.1:${port}/webhook`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-line-signature': signature },
+      headers: {
+        'content-type': 'application/json',
+        'x-line-signature': signature,
+      },
       body,
     });
 
     assert.equal(response.status, 200);
-    const stored = await db.query<{ id: string; due_date: string | null }>(
-      'SELECT id, due_date FROM tasks WHERE source_message_id = $1',
-      [invalidDateMessageId],
-    );
+    const stored = await db.query<{ id: string; due_date: string | null }>('SELECT id, due_date FROM tasks WHERE source_message_id = $1', [invalidDateMessageId]);
     assert.equal(stored.length, 1, 'one task is stored');
     assert.equal(stored[0].due_date, null, 'impossible date is omitted');
     assert.match(replies[0], /ไม่ใส่วันครบกำหนด/);
@@ -293,21 +409,42 @@ test('findAll(groupId) is scoped to that group only (A-8 / D-3)', async () => {
   const msgB = `mB_${RUN}`;
   await repo.saveMessage(msgA, groupA, userId, 'seed A');
   await repo.saveMessage(msgB, groupB, userId, 'seed B');
-  await repo.createTask({ title: 'A task', description: 'A', groupId: groupA, sourceMessageId: msgA, createdBy: userId });
-  await repo.createTask({ title: 'B task', description: 'B', groupId: groupB, sourceMessageId: msgB, createdBy: userId });
+  await repo.createTask({
+    title: 'A task',
+    description: 'A',
+    groupId: groupA,
+    sourceMessageId: msgA,
+    createdBy: userId,
+  });
+  await repo.createTask({
+    title: 'B task',
+    description: 'B',
+    groupId: groupB,
+    sourceMessageId: msgB,
+    createdBy: userId,
+  });
 
   const onlyA = await repo.findAll(groupA);
   assert.ok(onlyA.length >= 1, 'findAll(groupA) returns group A rows');
-  assert.ok(onlyA.every((t) => t.group_id === groupA), 'findAll(groupA) must return only group A tasks');
+  assert.ok(
+    onlyA.every((t) => t.group_id === groupA),
+    'findAll(groupA) must return only group A tasks',
+  );
 
   const onlyB = await repo.findAll(groupB);
-  assert.ok(onlyB.every((t) => t.group_id === groupB), 'findAll(groupB) must return only group B tasks');
-  assert.equal(onlyB.some((t) => t.group_id === groupA), false, 'group B key cannot read group A');
+  assert.ok(
+    onlyB.every((t) => t.group_id === groupB),
+    'findAll(groupB) must return only group B tasks',
+  );
+  assert.equal(
+    onlyB.some((t) => t.group_id === groupA),
+    false,
+    'group B key cannot read group A',
+  );
 
   // findAll() with no argument still returns all groups (single-tenant / dev mode).
   const all = await repo.findAll();
-  assert.ok(all.some((t) => t.group_id === groupA) && all.some((t) => t.group_id === groupB),
-    'findAll() returns every group');
+  assert.ok(all.some((t) => t.group_id === groupA) && all.some((t) => t.group_id === groupB), 'findAll() returns every group');
 
   await db.query('DELETE FROM tasks WHERE group_id = ANY($1)', [[groupA, groupB]]);
   await db.query('DELETE FROM line_messages WHERE message_id = ANY($1)', [[msgA, msgB]]);
@@ -323,7 +460,13 @@ test('per-group write scope: group A key cannot mutate group B task (IDOR fix)',
   await repo.saveMessage(msgA, groupA, userId, 'seed A');
   await repo.saveMessage(msgB, groupB, userId, 'seed B');
   const taskB = await repo.createTask(
-    { title: 'B secret', description: 'B', groupId: groupB, sourceMessageId: msgB, createdBy: userId },
+    {
+      title: 'B secret',
+      description: 'B',
+      groupId: groupB,
+      sourceMessageId: msgB,
+      createdBy: userId,
+    },
     groupB,
   );
 
@@ -356,7 +499,16 @@ test('multi-group ordering: group-relative move index is scoped to the group', a
 
   // Interleave creation so the two groups share the 'todo' column.
   const mk = (g: string, m: string, title: string) =>
-    repo.createTask({ title, description: title, groupId: g, sourceMessageId: m, createdBy: userId }, g);
+    repo.createTask(
+      {
+        title,
+        description: title,
+        groupId: g,
+        sourceMessageId: m,
+        createdBy: userId,
+      },
+      g,
+    );
   await mk(groupA, msgA, 'A1');
   await mk(groupB, msgB, 'B1');
   const a2 = await mk(groupA, msgA, 'A2');
@@ -366,12 +518,24 @@ test('multi-group ordering: group-relative move index is scoped to the group', a
   assert.ok(await repo.move(a2.id, 'todo', 0, groupA), 'move within group A succeeds');
 
   const colA = (await repo.findAll(groupA)).filter((t) => t.status === 'todo');
-  assert.deepEqual(colA.map((t) => t.title), ['A2', 'A1'], 'A2 moved ahead of A1 within group A');
-  assert.deepEqual(colA.map((t) => t.position), [0, 1], 'group A todo renumbered to a clean 0..1');
+  assert.deepEqual(
+    colA.map((t) => t.title),
+    ['A2', 'A1'],
+    'A2 moved ahead of A1 within group A',
+  );
+  assert.deepEqual(
+    colA.map((t) => t.position),
+    [0, 1],
+    'group A todo renumbered to a clean 0..1',
+  );
 
   // Group B is untouched — its cards keep their order and are not renumbered by group A's move.
   const colB = (await repo.findAll(groupB)).filter((t) => t.status === 'todo');
-  assert.deepEqual(colB.map((t) => t.title), ['B1', 'B2'], 'group B order preserved across group A move');
+  assert.deepEqual(
+    colB.map((t) => t.title),
+    ['B1', 'B2'],
+    'group B order preserved across group A move',
+  );
 
   await db.query('DELETE FROM tasks WHERE group_id = ANY($1)', [[groupA, groupB]]);
   await db.query('DELETE FROM line_messages WHERE message_id = ANY($1)', [[msgA, msgB]]);
@@ -404,7 +568,13 @@ test('update() cross-group edit is denied (IDOR fix)', async () => {
   await repo.saveMessage(msgA, groupA, userId, 'seed A');
   await repo.saveMessage(msgB, groupB, userId, 'seed B');
   const taskB = await repo.createTask(
-    { title: 'B secret', description: 'B', groupId: groupB, sourceMessageId: msgB, createdBy: userId },
+    {
+      title: 'B secret',
+      description: 'B',
+      groupId: groupB,
+      sourceMessageId: msgB,
+      createdBy: userId,
+    },
     groupB,
   );
 
@@ -448,7 +618,13 @@ test('softDelete() cross-group delete is denied (IDOR fix)', async () => {
   await repo.saveMessage(msgA, groupA, userId, 'seed A');
   await repo.saveMessage(msgB, groupB, userId, 'seed B');
   const taskB = await repo.createTask(
-    { title: 'B secret', description: 'B', groupId: groupB, sourceMessageId: msgB, createdBy: userId },
+    {
+      title: 'B secret',
+      description: 'B',
+      groupId: groupB,
+      sourceMessageId: msgB,
+      createdBy: userId,
+    },
     groupB,
   );
 

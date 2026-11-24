@@ -62,6 +62,12 @@ export class AppConfigService {
   get notifyAssign(): boolean {
     return (this.config.get<string>('NOTIFY_ASSIGN') ?? 'true') !== 'false';
   }
+  get notificationRetryLimit(): number {
+    return Number(this.config.get('NOTIFICATION_RETRY_LIMIT') ?? 5);
+  }
+  get notificationRetryIntervalMs(): number {
+    return Number(this.config.get('NOTIFICATION_RETRY_INTERVAL_MS') ?? 60_000);
+  }
 
   // --- AI extraction ---
   get anthropicApiKey(): string | undefined {

@@ -2,10 +2,16 @@ import { Injectable } from '@nestjs/common';
 import { v4 as uuid } from 'uuid';
 import { DatabaseService, Query } from '../database/database.service';
 import { NewTaskInput, Task, TaskStatus } from './dto/task.types';
+import { NotificationOutboxRepository } from '../notifications/notification-outbox.repository';
+
+type NotificationText = (task: Task) => string;
 
 @Injectable()
 export class TasksRepository {
-  constructor(private readonly db: DatabaseService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly notifications: NotificationOutboxRepository,
+  ) {}
 
   // Deduplication check: returns true if this messageId has already been processed.
   async messageExists(messageId: string): Promise<boolean> {
@@ -196,7 +202,12 @@ export class TasksRepository {
 
   // groupId (when set) both authorizes the write (task must be in that group, else null → 404)
   // and scopes the append position to the group's column.
-  async updateStatus(id: string, status: TaskStatus, groupId?: string): Promise<Task | null> {
+  async updateStatus(
+    id: string,
+    status: TaskStatus,
+    groupId?: string,
+    notificationText?: NotificationText,
+  ): Promise<Task | null> {
     // Changing column appends the card to the end of the new column.
     return this.db.withTransaction(async (q) => {
       await this.lockColumn(q, status, groupId);
@@ -218,7 +229,9 @@ export class TasksRepository {
          WHERE id = $1`,
         params,
       );
-      return this.findByIdWith(q, id, groupId);
+      const task = await this.findByIdWith(q, id, groupId);
+      await this.enqueueNotification(q, task, notificationText);
+      return task;
     });
   }
 
@@ -227,12 +240,19 @@ export class TasksRepository {
   // so concurrent drags can't interleave and corrupt position ordering. When groupId is set the
   // renumber is scoped to that group, so a group-relative drop index maps to this group's column
   // (not the merged all-groups list) and another group's positions are left untouched.
-  async move(id: string, status: TaskStatus, index: number, groupId?: string): Promise<Task | null> {
+  async move(
+    id: string,
+    status: TaskStatus,
+    index: number,
+    groupId?: string,
+    notificationText?: NotificationText,
+  ): Promise<Task | null> {
     return this.db.withTransaction(async (q) => {
       await this.lockColumn(q, status, groupId);
 
       const exists = await this.findByIdWith(q, id, groupId);
       if (!exists) return null;
+      const statusChanged = exists.status !== status;
 
       const params: unknown[] = [status, id];
       let scopeFilter = '';
@@ -257,25 +277,46 @@ export class TasksRepository {
           await q(`UPDATE tasks SET position = $2 WHERE id = $1`, [ordered[i], i]);
         }
       }
-      return this.findByIdWith(q, id, groupId);
+      const task = await this.findByIdWith(q, id, groupId);
+      await this.enqueueNotification(q, task, statusChanged ? notificationText : undefined);
+      return task;
     });
   }
 
   // groupId (when set) scopes the update so a per-group caller can't assign another group's task;
   // RETURNING lets us report a cross-group / missing id as null → 404 rather than a silent no-op.
-  async assign(id: string, userId: string, groupId?: string): Promise<Task | null> {
-    const params: unknown[] = [id, userId];
-    let scopeFilter = '';
-    if (groupId !== undefined) {
-      scopeFilter = ' AND group_id = $3';
-      params.push(groupId);
+  async assign(
+    id: string,
+    userId: string,
+    groupId?: string,
+    notificationText?: NotificationText,
+  ): Promise<Task | null> {
+    return this.db.withTransaction(async (q) => {
+      const params: unknown[] = [id, userId];
+      let scopeFilter = '';
+      if (groupId !== undefined) {
+        scopeFilter = ' AND group_id = $3';
+        params.push(groupId);
+      }
+      const updated = await q(
+        `UPDATE tasks SET assignee_id = $2, updated_at = now() WHERE id = $1${scopeFilter} RETURNING id`,
+        params,
+      );
+      if (updated.length === 0) return null;
+      const task = await this.findByIdWith(q, id, groupId);
+      await this.enqueueNotification(q, task, notificationText);
+      return task;
+    });
+  }
+
+  private async enqueueNotification(
+    query: Query,
+    task: Task | null,
+    notificationText?: NotificationText,
+  ): Promise<void> {
+    if (task && notificationText) {
+      await this.notifications.enqueueWith(query, task.group_id, notificationText(task));
     }
-    const updated = await this.db.query(
-      `UPDATE tasks SET assignee_id = $2, updated_at = now() WHERE id = $1${scopeFilter} RETURNING id`,
-      params,
-    );
-    if (updated.length === 0) return null;
-    return this.findById(id, groupId);
   }
 
   // Edit title/description/assignee — only the supplied fields change. groupId (when set) scopes

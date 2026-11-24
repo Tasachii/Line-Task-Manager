@@ -58,6 +58,18 @@ export class EnvVars {
   @IsBooleanString()
   NOTIFY_ASSIGN?: string;
 
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1)
+  NOTIFICATION_RETRY_LIMIT?: number;
+
+  @IsOptional()
+  @Transform(({ value }) => Number(value))
+  @IsInt()
+  @Min(1000)
+  NOTIFICATION_RETRY_INTERVAL_MS?: number;
+
   // --- AI extraction ---
   @IsOptional()
   @IsString()

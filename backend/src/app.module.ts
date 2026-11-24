@@ -9,6 +9,7 @@ import { LineModule } from './line/line.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { TasksModule } from './tasks/tasks.module';
 import { WebhookModule } from './webhook/webhook.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { WebhookModule } from './webhook/webhook.module';
     }),
     DatabaseModule,
     LineModule,
+    NotificationsModule,
     RealtimeModule,
     TasksModule,
     WebhookModule,

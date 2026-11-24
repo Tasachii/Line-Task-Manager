@@ -20,7 +20,7 @@ LINE Task Manager is a webhook-driven Kanban board that turns LINE group message
 
 A single deployment handles one or more LINE groups. Each message that contains `/task` (one line = one card) is parsed for priority tokens (`!high`, `!low`, and Thai aliases) and due dates (`@YYYY-MM-DD`). With `ANTHROPIC_API_KEY` set, the Claude API also screens keyword-free messages and promotes those that describe real work. The board reflects every change in real time over WebSocket; group members get a LINE push when a card moves or is assigned.
 
-- **Backend stack** — NestJS 10 · PostgreSQL 16 · @line/bot-sdk 11 · @anthropic-ai/sdk · Socket.IO 4 · TypeScript 5
+- **Backend stack** — NestJS 11 · PostgreSQL 16 · @line/bot-sdk 11 · @anthropic-ai/sdk · Socket.IO 4 · TypeScript 5
 - **Frontend stack** — React 18 · Vite 5 · @dnd-kit · socket.io-client · TypeScript 5
 
 ---
@@ -176,6 +176,8 @@ All variables are validated at startup by a `class-validator` schema in `backend
 | `CORS_ORIGIN` | Recommended | `*` | Allowed origin for the board API/WebSocket |
 | `NOTIFY_STATUSES` | No | all statuses | Comma-separated statuses that trigger a LINE push (e.g. `done` to conserve quota) |
 | `NOTIFY_ASSIGN` | No | `true` | Push to the group when a task is assigned |
+| `NOTIFICATION_RETRY_LIMIT` | No | `5` | Maximum LINE push attempts before an undelivered notification is marked failed |
+| `NOTIFICATION_RETRY_INTERVAL_MS` | No | `60000` | Delay between LINE push attempts; must be at least 1000 ms |
 | `ANTHROPIC_API_KEY` | No | — | Enables AI classification of keyword-free messages via the Claude API |
 | `AI_EXTRACT_MODEL` | No | `claude-haiku-4-5` | Claude model for extraction; use `claude-opus-4-8` for higher accuracy |
 | `THROTTLE_LIMIT` | No | `120` | Max board-API requests per IP per window |
@@ -197,7 +199,7 @@ BOARD_GROUPS={"Cabc123...":"keyA","Cdef456...":"keyB"}
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `POST` | `/webhook` | LINE HMAC signature | Receives events; returns 200 after durable intake and 503 for retryable processing failures |
-| `GET` | `/health` | None | Health check including database connectivity |
+| `GET` | `/health` | None | Database health plus `notifications.undelivered`, `pending`, and `failed` counts |
 | `GET` | `/tasks` | `x-board-key` | List tasks ordered by column position; scoped to the key's group when `BOARD_GROUPS` is set |
 | `PATCH` | `/tasks/:id/status` | `x-board-key` | Change status — card is appended to the target column |
 | `PATCH` | `/tasks/:id/move` | `x-board-key` | Move a card to `{status, index}`; used by drag-and-drop |
@@ -207,19 +209,21 @@ BOARD_GROUPS={"Cabc123...":"keyA","Cdef456...":"keyB"}
 
 WebSocket: clients send `auth.key` on connect when a password is set; the server emits `task:created`, `task:updated`, `task:deleted`, `tasks:refresh`.
 
+Status-change and assignment pushes use a PostgreSQL outbox. The card mutation and notification record commit together, then delivery runs in the background with the same LINE retry key on every attempt. LINE downtime therefore does not roll back a board change. Check `/health` for undelivered notifications; rows that reach the retry limit remain counted as `failed` for operator follow-up.
+
 ---
 
 ## Testing
 
 ```bash
-# Unit tests — 117 tests across signature verification, webhook controller/service,
-# AI extraction (Anthropic SDK mocked), board guard, realtime gateway, DTO validation.
+# Unit tests — 124 tests across signature verification, webhook controller/service,
+# notification retries, AI extraction, board guard, realtime gateway, and DTO validation.
 cd backend && npm test
 
 # Unit tests with coverage (c8; thresholds: lines 80, functions 80, branches 70).
 cd backend && npm run test:cov
 
-# Integration tests — 6 tests against a real PostgreSQL instance.
+# Integration tests — 18 tests against a real PostgreSQL instance.
 # Covers position ordering, advisory-lock concurrency, idempotent saveMessage,
 # and findAll group scoping. Requires Postgres up and migrated.
 docker compose -f docker-compose.dev.yml up -d

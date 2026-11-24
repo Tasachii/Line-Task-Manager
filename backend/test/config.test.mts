@@ -24,6 +24,8 @@ test('defaults applied when env is empty', () => {
   assert.equal(c.throttleTtlMs, 60_000);
   assert.equal(c.corsOrigin, '*');
   assert.equal(c.notifyAssign, true);
+  assert.equal(c.notificationRetryLimit, 5);
+  assert.equal(c.notificationRetryIntervalMs, 60_000);
   assert.deepEqual([...new Set(c.notifyStatuses.split(','))].length, 4);
   assert.equal(c.boardPassword, undefined);
   assert.deepEqual(c.boardGroups, {});

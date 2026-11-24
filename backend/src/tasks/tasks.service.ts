@@ -1,9 +1,9 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { TasksRepository } from './tasks.repository';
 import { EventsGateway } from '../realtime/events.gateway';
-import { LineClientService } from '../line/line-client.service';
 import { AppConfigService } from '../config/app-config.service';
 import { NewTaskInput, Task, TaskStatus, TASK_STATUSES, UpdateTaskDto } from './dto/task.types';
+import { NotificationOutboxService } from '../notifications/notification-outbox.service';
 
 // Thai status labels used in LINE group notification messages.
 const STATUS_LABELS: Record<TaskStatus, string> = {
@@ -22,8 +22,8 @@ export class TasksService {
   constructor(
     private readonly repo: TasksRepository,
     private readonly events: EventsGateway,
-    private readonly line: LineClientService,
     private readonly config: AppConfigService,
+    private readonly notifications: NotificationOutboxService,
   ) {
     this.notifyStatuses = new Set(
       this.config.notifyStatuses
@@ -77,25 +77,28 @@ export class TasksService {
       // Invalid status is a bad request (400), not a missing resource (404).
       throw new BadRequestException(`unknown status: ${status}`);
     }
-    const task = await this.repo.updateStatus(id, status, groupId);
+    const notificationText = this.notifyStatuses.has(status)
+      ? (updated: Task) => this.statusNotification(updated, status)
+      : undefined;
+    const task = await this.repo.updateStatus(id, status, groupId, notificationText);
     if (!task) throw new NotFoundException('task not found');
     this.events.taskUpdated(task);
-    this.notifyStatusChange(task, status);
+    if (notificationText) this.notifications.kick();
     return task;
   }
 
   // Drag card: changes both column and order — notifies LINE only on cross-column moves.
   // groupId scopes the write to the caller's group (cross-group id → 404).
   async move(id: string, status: TaskStatus, index: number, groupId?: string): Promise<Task> {
-    const before = await this.repo.findById(id, groupId);
-    if (!before) throw new NotFoundException('task not found');
-
-    const task = await this.repo.move(id, status, index, groupId);
+    const notificationText = this.notifyStatuses.has(status)
+      ? (updated: Task) => this.statusNotification(updated, status)
+      : undefined;
+    const task = await this.repo.move(id, status, index, groupId, notificationText);
     if (!task) throw new NotFoundException('task not found');
 
     // Other cards in the column also shift positions — broadcast refresh so all clients re-fetch order.
     this.events.tasksReordered(task.group_id);
-    if (before.status !== status) this.notifyStatusChange(task, status);
+    if (notificationText) this.notifications.kick();
     return task;
   }
 
@@ -107,16 +110,14 @@ export class TasksService {
       // Unknown user with no display name supplied — return 400 explicitly rather than letting the FK fail as 500.
       throw new BadRequestException('unknown user — provide displayName');
     }
-    const task = await this.repo.assign(id, userId, groupId);
+    const notificationText = this.notifyAssign
+      ? (assigned: Task) => `🙋 ${assigned.assignee_name ?? displayName ?? 'มีคน'} รับงาน "${assigned.title}" แล้ว`
+      : undefined;
+    const task = await this.repo.assign(id, userId, groupId, notificationText);
     if (!task) throw new NotFoundException('task not found');
     this.events.taskUpdated(task);
 
-    if (this.notifyAssign) {
-      void this.line.pushToGroup(
-        task.group_id,
-        `🙋 ${task.assignee_name ?? displayName ?? 'มีคน'} รับงาน "${task.title}" แล้ว`,
-      );
-    }
+    if (notificationText) this.notifications.kick();
     return task;
   }
 
@@ -151,13 +152,8 @@ export class TasksService {
     return { id: deleted.id };
   }
 
-  // Notifies the LINE group of a status change (fire-and-forget — push failure does not affect the API).
-  private notifyStatusChange(task: Task, status: TaskStatus) {
-    if (!this.notifyStatuses.has(status)) return;
+  private statusNotification(task: Task, status: TaskStatus): string {
     const who = task.assignee_name ? `\nผู้รับผิดชอบ: ${task.assignee_name}` : '';
-    void this.line.pushToGroup(
-      task.group_id,
-      `งาน: ${task.title}\nสถานะ → ${STATUS_LABELS[status]}${who}`,
-    );
+    return `งาน: ${task.title}\nสถานะ → ${STATUS_LABELS[status]}${who}`;
   }
 }

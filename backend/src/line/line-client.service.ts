@@ -49,16 +49,18 @@ export class LineClientService {
     }
   }
 
-  // Pushes a message to the group at any time (no replyToken needed); used for progress notifications.
-  // Errors are swallowed — a failed notification must not fail the main API call.
-  async pushToGroup(groupId: string, text: string): Promise<void> {
+  // Pushes a message with a stable retry key. LINE returns 409 when that key was already accepted;
+  // treating that response as success prevents duplicate delivery after an ambiguous timeout.
+  async pushToGroup(groupId: string, text: string, retryKey: string): Promise<void> {
     try {
       await this.client.pushMessage({
         to: groupId,
         messages: [{ type: 'text', text }],
-      });
+      }, retryKey);
     } catch (e) {
-      this.logger.warn(`push to ${groupId} failed: ${(e as Error).message}`);
+      const response = e as { status?: number; headers?: Headers };
+      if (response.status === 409 && response.headers?.has('x-line-accepted-request-id')) return;
+      throw e;
     }
   }
 }
