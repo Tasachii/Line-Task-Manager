@@ -8,6 +8,7 @@ export interface ExtractedTask {
   description: string;
   priority?: TaskPriority;
   dueDate?: string; // YYYY-MM-DD
+  invalidDueDate?: string;
 }
 
 // A genuine "no task" classification is represented by a successful empty array.
@@ -142,11 +143,16 @@ export class TaskExtractionService {
   private parseLine(line: string): ExtractedTask {
     let priority: TaskPriority | undefined;
     let dueDate: string | undefined;
+    let invalidDueDate: string | undefined;
 
     const due = line.match(/@(\d{4}-\d{2}-\d{2})/);
     if (due) {
-      dueDate = due[1];
       line = line.replace(due[0], '').trim();
+      if (isStrictDate(due[1])) {
+        dueDate = due[1];
+      } else {
+        invalidDueDate = due[1];
+      }
     }
     if (/!(high|สูง|ด่วน)/iu.test(line)) {
       priority = 'high';
@@ -156,7 +162,13 @@ export class TaskExtractionService {
       line = line.replace(/!(low|ต่ำ)/giu, '').trim();
     }
 
-    return { title: this.truncateTitle(line), description: line, priority, dueDate };
+    return {
+      title: this.truncateTitle(line),
+      description: line,
+      priority,
+      dueDate,
+      invalidDueDate,
+    };
   }
 
   // Truncate to 60 visible graphemes — Thai vowels/tone marks are never split mid-character.

@@ -94,7 +94,16 @@ export class WebhookService {
 
     // Send confirmation back to the group (optional).
     if (event.replyToken) {
-      await this.line.replyText(event.replyToken, `รับเข้า Todo แล้ว ${created.length} งาน ✅`);
+      const invalidDates = extracted
+        .flatMap((task) => task.invalidDueDate ?? [])
+        .join(', ');
+      const dateNote = invalidDates
+        ? `\nไม่ใส่วันครบกำหนด เพราะวันที่ไม่ถูกต้อง: ${invalidDates}`
+        : '';
+      await this.line.replyText(
+        event.replyToken,
+        `รับเข้า Todo แล้ว ${created.length} งาน ✅${dateNote}`,
+      );
     }
   }
 }

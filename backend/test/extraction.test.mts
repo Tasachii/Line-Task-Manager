@@ -48,6 +48,14 @@ test('@YYYY-MM-DD → due date parsed and stripped from title', async () => {
   assert.ok(!out[0].title.includes('@2026'));
 });
 
+test('impossible calendar date is omitted without losing the task', async () => {
+  const out = await svc.extract('/task ส่งรายงาน @2026-02-30');
+  assert.equal(out.length, 1);
+  assert.equal(out[0].title, 'ส่งรายงาน');
+  assert.equal(out[0].dueDate, undefined);
+  assert.equal(out[0].invalidDueDate, '2026-02-30');
+});
+
 test('title truncated at 60 graphemes + … (Thai vowels not split)', async () => {
   const long = 'กี่'.repeat(70); // 70 Thai graphemes with vowels+tone marks (210 code points)
   const out = await svc.extract(`/task ${long}`);

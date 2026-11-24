@@ -94,6 +94,26 @@ test('new message with a task → atomically claimed and created, confirmation r
   assert.match(String(reply!.args[1]), /1/);
 });
 
+test('task with an impossible date creates one card without a due date and explains the omission', async () => {
+  const d = makeDeps();
+  d.state.extracted = [{
+    title: 'ส่งรายงาน',
+    description: 'ส่งรายงาน',
+    dueDate: undefined,
+    invalidDueDate: '2026-02-30',
+  }];
+
+  await d.svc.handleEvents([textMessage('/task ส่งรายงาน @2026-02-30')]);
+
+  const inputs = d.argsOf('claimMessageAndCreateTasks')![1] as { dueDate?: string }[];
+  assert.equal(inputs.length, 1);
+  assert.equal(inputs[0].dueDate, undefined);
+  const reply = d.argsOf('replyText');
+  assert.ok(reply);
+  assert.match(String(reply[1]), /2026-02-30/);
+  assert.match(String(reply[1]), /ไม่ใส่วันครบกำหนด/);
+});
+
 test('extraction empty → no task created, no reply', async () => {
   const d = makeDeps();
   d.state.extracted = [];

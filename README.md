@@ -105,6 +105,9 @@ Change the button color to green
 
 Two cards appear in Todo (the first with high priority and a due date); the bot confirms intake in the group.
 
+If a `/task` message contains an impossible calendar date such as `@2026-02-30`, the card is still
+created without a due date and the confirmation reply explains that the invalid date was omitted.
+
 > Without `ANTHROPIC_API_KEY`, only `/task` messages create cards — plain conversation is ignored.
 > With the key set, the AI also classifies keyword-free messages that describe work.
 

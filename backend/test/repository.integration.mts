@@ -7,12 +7,22 @@
 import 'reflect-metadata';
 import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import express from 'express';
+import { HttpException } from '@nestjs/common';
+import { fakeConfig } from './helpers/config.mts';
 
 process.env.DATABASE_URL =
   process.env.DATABASE_URL ?? 'postgres://line:line@localhost:5432/line_task_manager';
 
 const { DatabaseService } = await import('../src/database/database.service');
 const { TasksRepository } = await import('../src/tasks/tasks.repository');
+const { TasksService } = await import('../src/tasks/tasks.service');
+const { TaskExtractionService } = await import('../src/tasks/task-extraction.service');
+const { WebhookService } = await import('../src/webhook/webhook.service');
+const { WebhookController } = await import('../src/webhook/webhook.controller');
 
 const db = new DatabaseService();
 const repo = new TasksRepository(db);
@@ -164,6 +174,90 @@ test('failed intake rolls back its claim so a retry can succeed', async () => {
 
   await db.query('DELETE FROM tasks WHERE source_message_id = $1', [retryMessageId]);
   await db.query('DELETE FROM line_messages WHERE message_id = $1', [retryMessageId]);
+});
+
+test('HTTP webhook stores one task without a due date for an impossible calendar date', async () => {
+  const secret = 'integration_secret';
+  const invalidDateMessageId = `invalid_date_${RUN}`;
+  const config = fakeConfig({
+    ANTHROPIC_API_KEY: undefined,
+    BOARD_GROUPS: undefined,
+    LINE_CHANNEL_SECRET: secret,
+    TASK_KEYWORD: '/task',
+  });
+  const replies: string[] = [];
+  const line = {
+    verifySignature(rawBody: Buffer | string, signature: string | undefined) {
+      if (!signature) return false;
+      const body = typeof rawBody === 'string' ? rawBody : rawBody.toString('utf8');
+      const expected = crypto.createHmac('sha256', secret).update(body).digest('base64');
+      return signature === expected;
+    },
+    getGroupMemberName: async () => 'Integration Tester',
+    replyText: async (_replyToken: string, text: string) => { replies.push(text); },
+    pushToGroup: async () => {},
+  };
+  const events = { taskCreated: () => {} };
+  const tasks = new TasksService(repo, events as never, line as never, config);
+  const extractor = new TaskExtractionService(config);
+  const webhook = new WebhookService(line as never, tasks, extractor, config);
+  const controller = new WebhookController(line as never, webhook);
+  const app = express();
+  app.use(express.json({
+    verify: (req: express.Request & { rawBody?: Buffer }, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }));
+  app.post('/webhook', async (req: express.Request & { rawBody?: Buffer }, res) => {
+    try {
+      res.status(200).json(await controller.receive(req as never, req.header('x-line-signature') as never));
+    } catch (error) {
+      if (error instanceof HttpException) {
+        res.status(error.getStatus()).json(error.getResponse());
+      } else {
+        res.status(500).json({ error: (error as Error).message });
+      }
+    }
+  });
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const { port } = server.address() as AddressInfo;
+    const body = JSON.stringify({
+      events: [{
+        type: 'message',
+        message: {
+          type: 'text',
+          id: invalidDateMessageId,
+          text: '/task ส่งรายงาน @2026-02-30',
+        },
+        source: { type: 'group', groupId, userId },
+        replyToken: 'integration-reply',
+        timestamp: Date.now(),
+        mode: 'active',
+      }],
+    });
+    const signature = crypto.createHmac('sha256', secret).update(body).digest('base64');
+    const response = await fetch(`http://127.0.0.1:${port}/webhook`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-line-signature': signature },
+      body,
+    });
+
+    assert.equal(response.status, 200);
+    const stored = await db.query<{ id: string; due_date: string | null }>(
+      'SELECT id, due_date FROM tasks WHERE source_message_id = $1',
+      [invalidDateMessageId],
+    );
+    assert.equal(stored.length, 1, 'one task is stored');
+    assert.equal(stored[0].due_date, null, 'impossible date is omitted');
+    assert.match(replies[0], /ไม่ใส่วันครบกำหนด/);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await db.query('DELETE FROM tasks WHERE source_message_id = $1', [invalidDateMessageId]);
+    await db.query('DELETE FROM line_messages WHERE message_id = $1', [invalidDateMessageId]);
+  }
 });
 
 // A-8 / D-3 — per-group isolation. findAll(groupId) must return only that group's rows so a
