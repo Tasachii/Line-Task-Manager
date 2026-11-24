@@ -86,6 +86,7 @@ frontend/
   scripts/e2e.mjs                # Puppeteer e2e script
   nginx.conf                     # production reverse proxy
 migrations/                      # numbered SQL files, applied in order
+scripts/                         # production database backup/restore and restore proof
 docs/
   01-architecture/00-system-design.md
   flows/                         # interactive HTML + Mermaid flow diagrams

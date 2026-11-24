@@ -109,6 +109,27 @@ docker compose --profile full up -d --build
 The hidden prompt keeps the password out of shell history. Run these commands from the same
 checkout and keep the same Compose project name so it reuses the existing named volume.
 
+### Backup and restore
+
+Create a consistent custom-format dump while the app is running:
+
+```bash
+./scripts/backup-database.sh /secure/path/line-task-manager.dump
+```
+
+Copy the dump to another machine immediately; a file kept only beside the production volume is not
+a usable disaster-recovery backup. To restore, start only a fresh production database, restore the
+dump, then start the application:
+
+```bash
+docker compose --profile full up -d db
+./scripts/restore-database.sh /secure/path/line-task-manager.dump
+docker compose --profile full up -d --build
+```
+
+The restore command refuses a database that already contains public tables. Use a new volume or an
+otherwise empty `line_task_manager` database.
+
 ---
 
 ## Connecting a LINE Official Account
