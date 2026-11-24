@@ -134,14 +134,15 @@ otherwise empty `line_task_manager` database.
 
 ## Connecting a LINE Official Account
 
-1. Create a Provider and a **Messaging API channel** at [developers.line.biz](https://developers.line.biz).
-2. **Basic settings** tab → copy **Channel secret** into `backend/.env` as `LINE_CHANNEL_SECRET`.
-3. **Messaging API** tab → issue a long-lived Channel access token → `LINE_CHANNEL_ACCESS_TOKEN`.
-4. Expose `:8080` publicly: `ngrok http 8080` (dev) or a real domain (prod).
-5. Set **Webhook URL** to `https://<your-domain>/webhook`, click **Verify** (must report Success), enable **Use webhook**.
-6. In [LINE Official Account Manager](https://manager.line.biz): Response settings → **Chat** off · **Auto-response** off · **Webhooks** on.
-7. Account settings → enable **Allow bot to join group chats**.
-8. Invite the bot to a group. Send:
+1. Create a LINE Official Account, or open an existing one in [LINE Official Account Manager](https://manager.line.biz).
+2. In Official Account Manager, open **Settings → Messaging API**, enable the Messaging API, and select the provider that will own the channel. This creates the Messaging API channel; channels can no longer be created directly in the Developers Console. See LINE's [official setup guide](https://developers.line.biz/en/docs/messaging-api/getting-started/).
+3. Open that channel in the [LINE Developers Console](https://developers.line.biz/console/). On **Basic settings**, copy **Channel secret** into `backend/.env` as `LINE_CHANNEL_SECRET`.
+4. On **Messaging API**, issue a long-lived channel access token and set it as `LINE_CHANNEL_ACCESS_TOKEN`.
+5. Still on **Messaging API**, enable **Allow bot to join group chats**.
+6. Expose `:8080` publicly with `ngrok http 8080` for development or a real production domain.
+7. Set **Webhook URL** to `https://<your-domain>/webhook`, click **Verify** (it must report Success), then enable both **Use webhook** and **Webhook redelivery**. See LINE's [webhook redelivery instructions](https://developers.line.biz/en/docs/messaging-api/receiving-messages/#enable-webhook-redelivery).
+8. In Official Account Manager, open **Settings → Response settings** and turn **Chat** and **Auto-response** off.
+9. Invite the bot to a group. Send:
 
 ```
 /task Fix the login button on the landing page !high @2026-07-01

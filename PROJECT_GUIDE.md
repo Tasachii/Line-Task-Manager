@@ -180,7 +180,7 @@ pointers and acceptance criteria (written for handoff):
 |---|---|
 | Webhook Verify fails in LINE console | Tunnel/domain not reaching nginx (`:8080`) or backend; wrong `LINE_CHANNEL_SECRET` |
 | Webhook returns 400 | Signature mismatch — secret is wrong, or the body was re-serialized by a proxy before reaching the backend |
-| Bot silent in group | "Allow bot to join group chats" disabled, webhooks off in OA Manager, or message had no keyword and no `ANTHROPIC_API_KEY` set |
+| Bot silent in group | "Allow bot to join group chats" or "Use webhook" disabled on the Developers Console's Messaging API tab, or message had no keyword and no `ANTHROPIC_API_KEY` set |
 | Board empty but tasks exist | Wrong `x-board-key` (REST returns 401) or `CORS_ORIGIN` blocking the frontend origin |
 | Board not updating live | WebSocket rejected: missing/incorrect `auth.key`, or proxy not forwarding `/socket.io/` upgrades |
 | `npm test` fails immediately | Run `npm run build` first — unit tests import from `dist/` |
