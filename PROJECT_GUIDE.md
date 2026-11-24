@@ -25,11 +25,11 @@ In production every component runs in Docker, and nginx (in the frontend contain
 ### Message-to-card pipeline
 
 1. LINE POSTs events to `/webhook`. The controller verifies the `x-line-signature` header against `LINE_CHANNEL_SECRET` using the raw request body (`rawBody: true` in `main.ts`); invalid signatures get HTTP 400.
-2. `WebhookService` processes each event independently — one failing event never fails the batch. Only text messages from group chats are considered. A `join` event triggers a greeting message that explains usage.
+2. `WebhookService` attempts every event independently and collects failures. If any event fails, the controller returns HTTP 503 so LINE retries the webhook; message-ID deduplication prevents successfully handled events from creating duplicate cards. Only text messages from group chats are considered. A `join` event triggers a greeting message that explains usage.
 3. The message ID is checked against `line_messages` before insert; duplicates (LINE retries webhooks) are skipped silently.
 4. `TaskExtractionService` decides what the message means:
    - Starts with the keyword (`TASK_KEYWORD`, default `/task`, case-insensitive): each non-empty line becomes one task. Inline tokens are parsed and stripped: `@YYYY-MM-DD` sets the due date; `!high` / `!สูง` / `!ด่วน` sets high priority; `!low` / `!ต่ำ` sets low priority. Titles are truncated at 60 graphemes using `Intl.Segmenter` so Thai combining marks are never split.
-   - No keyword and `ANTHROPIC_API_KEY` is set: the message goes to Claude with a JSON-schema-constrained output (`EXTRACT_SCHEMA`). The model classifies task vs. conversation and may return multiple tasks. The client uses a 15-second timeout and one retry; any failure is fail-open — the message is skipped and the webhook never blocks or errors.
+   - No keyword and `ANTHROPIC_API_KEY` is set: the message goes to Claude with a JSON-schema-constrained output (`EXTRACT_SCHEMA`). The model classifies task vs. conversation and may return multiple tasks. The client uses a 15-second timeout and one retry; if extraction still fails, the webhook returns HTTP 503 so LINE retries the delivery.
    - No keyword and no API key: the message is ignored.
 5. Created tasks are persisted with `position` appended to the end of Todo, broadcast over WebSocket (`task:created`), and confirmed in the group via the reply token.
 
@@ -150,7 +150,7 @@ CI (`.github/workflows/ci.yml`) runs backend build + unit tests + integration te
 
 - **Language**: code, comments, commit messages, and docs in English. End-user copy — LINE bot messages, push notifications, the AI extraction prompt, and board UI labels — is intentionally Thai; do not translate it.
 - **No ORM**: SQL lives in repository classes (`tasks.repository.ts`). Keep queries there, not in services.
-- **Error philosophy**: the webhook must always return 200 quickly once the signature is valid — per-event errors are logged and swallowed; AI extraction is fail-open; LINE pushes are fire-and-forget. Board API errors, by contrast, should be explicit (400/404) rather than leaking as 500s.
+- **Error philosophy**: the webhook returns 200 only after every verified event is handled successfully. Processing failures are logged and produce HTTP 503 so LINE retries; message-ID deduplication makes repeated delivery safe. LINE pushes are fire-and-forget. Board API errors, by contrast, should be explicit (400/404) rather than leaking as 500s.
 - **Realtime**: any mutation that changes a single task emits `task:created`/`task:updated`; anything that renumbers positions emits `tasks:refresh`.
 - **Thai text handling**: use grapheme-aware operations (`Intl.Segmenter`) when slicing user text; never `substring` Thai strings.
 - **Commits**: imperative, descriptive subject lines; no AI attribution trailers.

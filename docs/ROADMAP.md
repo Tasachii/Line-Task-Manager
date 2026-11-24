@@ -128,7 +128,7 @@ tasks, and the assignee identity is a client-generated random id (`App.tsx` `loa
 
 1. Read [PROJECT_GUIDE.md](../PROJECT_GUIDE.md) §2 (architecture) and §9 (conventions).
 2. Check the "Where in the code" pointers above and the relevant flow doc in [docs/flows/](flows/index.html).
-3. Follow the error philosophy (PROJECT_GUIDE §9): webhook fail-open, board API explicit 4xx, realtime
-   events on every mutation.
+3. Follow the error philosophy (PROJECT_GUIDE §9): webhook failures return 503 for retry, board API
+   errors use explicit 4xx responses, and realtime events are sent on every mutation.
 4. Add tests at the right layer (unit for pure logic, integration for SQL/concurrency, e2e for UI) and
    keep CI green.

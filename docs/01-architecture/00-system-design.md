@@ -58,7 +58,7 @@ A Kanban board integrated with LINE group chats. A bot reads messages in a LINE 
 |---|---|---|
 | Backend | NestJS (Node.js + TypeScript) | Official LINE SDK; modular structure |
 | LINE | LINE Messaging API + `@line/bot-sdk` | Core of the system |
-| AI | Claude API (`@anthropic-ai/sdk`), optional | Extracts tasks from natural-language messages; fail-open |
+| AI | Claude API (`@anthropic-ai/sdk`), optional | Extracts tasks from natural-language messages; failures return 503 for webhook retry |
 | Frontend | React + Vite + dnd-kit | Kanban drag and drop; dnd-kit actively maintained |
 | Realtime | Socket.IO | Live board updates, target delay ≤1–2 s (NFR) |
 | Database | PostgreSQL 16 (raw SQL via `pg`) | Relational fit for tasks/users/messages |

@@ -162,7 +162,7 @@ WebSocket: clients send `auth.key` on connect when a password is set; the server
 ## Testing
 
 ```bash
-# Unit tests — 105 tests across signature verification, webhook controller/service,
+# Unit tests — 117 tests across signature verification, webhook controller/service,
 # AI extraction (Anthropic SDK mocked), board guard, realtime gateway, DTO validation.
 cd backend && npm test
 
@@ -194,7 +194,7 @@ CI runs three jobs on every push and pull request. **backend** (build + unit tes
 | Ordering integrity | Position writes run in a transaction serialized on a per-column PostgreSQL advisory lock — concurrent edits cannot corrupt order |
 | Per-group key model | `BOARD_GROUPS` maps each LINE `group_id` to its own board key; `GET /tasks` and the WebSocket room are both scoped to that group, so key A never exposes group B's data |
 | Duplicate prevention | `message_id` checked before insert absorbs LINE webhook retries — the same message is never stored twice |
-| AI failure | Fail-open: if extraction errors or times out the message is silently skipped; the webhook always returns 200 and is never blocked |
+| AI failure | Extraction errors and timeouts return 503 so LINE retries the webhook; message-ID deduplication prevents successfully handled events from creating duplicate cards |
 | Rate limiting | Per-IP throttle on the board API; the LINE webhook and `/health` are exempt |
 | Prod startup guard | `assertProdConfig` refuses to boot in production without board auth, explicit `CORS_ORIGIN`, and a non-empty `LINE_CHANNEL_SECRET` |
 
@@ -207,7 +207,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for the full prioritized backlog with cod
 - [x] Signed webhook (HMAC raw-body)
 - [x] Per-group board isolation via `BOARD_GROUPS`
 - [x] Advisory-lock ordering with concurrency coverage
-- [x] Optional AI extraction (fail-open)
+- [x] Optional AI extraction with retry-safe webhook intake
 - [x] Real-time board updates over WebSocket
 - [x] Docker full-stack deployment
 - [ ] LINE Login for per-user identity (P0 — before multi-team use)
