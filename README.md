@@ -199,7 +199,7 @@ BOARD_GROUPS={"Cabc123...":"keyA","Cdef456...":"keyB"}
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
 | `POST` | `/webhook` | LINE HMAC signature | Receives events; returns 200 after durable intake and 503 for retryable processing failures |
-| `GET` | `/health` | None | Database health plus `notifications.undelivered`, `pending`, and `failed` counts |
+| `GET` | `/health` | None | Database health plus `notifications.undelivered`, `pending`, `failed` counts and `oldestOverduePendingAgeSeconds` |
 | `GET` | `/tasks` | `x-board-key` | List tasks ordered by column position; scoped to the key's group when `BOARD_GROUPS` is set |
 | `PATCH` | `/tasks/:id/status` | `x-board-key` | Change status — card is appended to the target column |
 | `PATCH` | `/tasks/:id/move` | `x-board-key` | Move a card to `{status, index}`; used by drag-and-drop |
@@ -209,7 +209,7 @@ BOARD_GROUPS={"Cabc123...":"keyA","Cdef456...":"keyB"}
 
 WebSocket: clients send `auth.key` on connect when a password is set; the server emits `task:created`, `task:updated`, `task:deleted`, `tasks:refresh`.
 
-Status-change and assignment pushes use a PostgreSQL outbox. The card mutation and notification record commit together, then delivery runs in the background with the same LINE retry key on every attempt. LINE downtime therefore does not roll back a board change. Check `/health` for undelivered notifications; rows that reach the retry limit remain counted as `failed` for operator follow-up.
+Status-change and assignment pushes use a PostgreSQL outbox. The card mutation and notification record commit together, then delivery runs in the background with the same LINE retry key on every attempt. LINE downtime therefore does not roll back a board change. Check `/health` for undelivered notifications; rows that reach the retry limit remain counted as `failed` for operator follow-up. The health response also includes `notifications.oldestOverduePendingAgeSeconds`, the age of the oldest due pending notification, measured from its `next_attempt_at` to the database clock at query start and rounded down to whole seconds. Future retries and failed notifications do not contribute to this age. It is `null` when nothing is due and `0` when the oldest retry became due less than one second ago (including exactly due). The age and existing counts reflect one database snapshot.
 
 ### Inspect and redrive failed notifications
 

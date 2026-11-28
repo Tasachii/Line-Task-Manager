@@ -18,6 +18,7 @@ export type PushFailure = 'ambiguous' | 'rate_limited' | 'rejected' | 'window_cl
 export interface UndeliveredCounts {
   pending: number;
   failed: number;
+  oldestOverduePendingAgeSeconds: number | null;
 }
 
 @Injectable()
@@ -119,14 +120,18 @@ export class NotificationOutboxRepository {
   }
 
   async countUndelivered(): Promise<UndeliveredCounts> {
-    const rows = await this.db.query<{ status: 'pending' | 'failed'; count: string }>(
-      `SELECT status, count(*)::text AS count
+    // Counts and age share one MVCC snapshot and one database clock reference.
+    const [counts] = await this.db.query<UndeliveredCounts>(
+      `SELECT (count(*) FILTER (WHERE status = 'pending'))::float8 AS pending,
+              (count(*) FILTER (WHERE status = 'failed'))::float8 AS failed,
+              floor(extract(epoch FROM statement_timestamp() -
+                (min(next_attempt_at) FILTER (
+                  WHERE status = 'pending' AND next_attempt_at <= statement_timestamp()
+                ))
+              ))::float8 AS "oldestOverduePendingAgeSeconds"
        FROM notification_outbox
-       WHERE status IN ('pending', 'failed')
-       GROUP BY status`,
+       WHERE status IN ('pending', 'failed')`,
     );
-    const counts: UndeliveredCounts = { pending: 0, failed: 0 };
-    for (const row of rows) counts[row.status] = Number(row.count);
     return counts;
   }
 }

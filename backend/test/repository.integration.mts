@@ -181,7 +181,7 @@ test('notification claims are exclusive, fenced, counted, and recover an interru
       }
     }
     const failedCounts = await outbox.countUndelivered();
-    assert.deepEqual(failedCounts, { pending: 0, failed: 1 }, 'third completed failure is reported');
+    assert.deepEqual(failedCounts, { pending: 0, failed: 1, oldestOverduePendingAgeSeconds: null }, 'third completed failure is reported');
     await isolatedDb.query('DELETE FROM notification_outbox WHERE id = $1', [permanentId]);
 
     const interruptedId = await enqueue('interrupted final attempt');
@@ -199,7 +199,7 @@ test('notification claims are exclusive, fenced, counted, and recover an interru
     const interrupted = await isolatedDb.query('SELECT status, attempts FROM notification_outbox WHERE id = $1', [interruptedId]);
     assert.deepEqual(interrupted[0], { status: 'failed', attempts: 1 });
     const counts = await outbox.countUndelivered();
-    assert.deepEqual(counts, { pending: 0, failed: 1 }, 'interrupted final attempt is visible as failed');
+    assert.deepEqual(counts, { pending: 0, failed: 1, oldestOverduePendingAgeSeconds: null }, 'interrupted final attempt is visible as failed');
   } finally {
     await isolatedPool.end();
     await db.query(`DROP SCHEMA "${schema}" CASCADE`);

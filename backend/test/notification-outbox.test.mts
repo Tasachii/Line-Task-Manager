@@ -75,7 +75,12 @@ class MemoryOutboxRepository {
   }
 
   async countUndelivered() {
+    const now = Date.now();
+    const due = this.records.filter(record => record.status === 'pending' && record.nextAttempt <= now);
     return {
+      oldestOverduePendingAgeSeconds: due.length
+        ? Math.floor((now - Math.min(...due.map(record => record.nextAttempt))) / 1000)
+        : null,
       pending: this.records.filter((record) => record.status === 'pending').length,
       failed: this.records.filter((record) => record.status === 'failed').length,
     };
@@ -168,7 +173,7 @@ test('permanent LINE failure stops at the retry limit and remains reported', asy
   assert.equal(outbox.calls.length, 3);
   assert.equal(outbox.repo.records[0].attempts, 3);
   assert.equal(outbox.repo.records[0].status, 'failed');
-  assert.deepEqual(await outbox.service.countUndelivered(), { pending: 0, failed: 1 });
+  assert.deepEqual(await outbox.service.countUndelivered(), { pending: 0, failed: 1, oldestOverduePendingAgeSeconds: null });
 });
 
 test('an old never-attempted notification is still sent once', async () => {
@@ -199,15 +204,15 @@ test('LINE duplicate-retry response is treated as already delivered', async () =
   await assert.doesNotReject(() => line.pushToGroup('group-1', 'notification', 'retry-key'));
 });
 
-test('health reports pending and terminally failed notification counts', async () => {
+test('health reports pending and terminally failed notification counts and oldest due age', async () => {
   const db = { query: async () => [{ '?column?': 1 }] };
-  const notifications = { countUndelivered: async () => ({ pending: 2, failed: 1 }) };
+  const notifications = { countUndelivered: async () => ({ pending: 2, failed: 1, oldestOverduePendingAgeSeconds: 17 }) };
   const controller = new HealthController(db as never, notifications as never);
 
   assert.deepEqual(await controller.check(), {
     status: 'ok',
     db: 'up',
-    notifications: { undelivered: 3, pending: 2, failed: 1 },
+    notifications: { undelivered: 3, pending: 2, failed: 1, oldestOverduePendingAgeSeconds: 17 },
   });
 });
 
