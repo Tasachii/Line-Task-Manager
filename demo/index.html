@@ -63,7 +63,7 @@ body{
   font-size:.72rem;font-weight:600;
   color:#fff;background:var(--ink);
   padding:3px 10px;border-radius:999px;
-  font-family:var(--font-display);letter-spacing:.04em;
+  font-family:var(--font-display);letter-spacing:.04em;white-space:nowrap;
 }
 .topbar-sub{
   font-size:.8rem;color:var(--ink-soft);
@@ -71,6 +71,7 @@ body{
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
 }
 .spacer{flex:1}
+#ws-dot{white-space:nowrap;flex-shrink:0}
 
 /* ── main wrap ── */
 .wrap{max-width:1180px;margin:0 auto;padding:28px 20px 60px}
@@ -148,7 +149,7 @@ body{
   display:flex;gap:0;
 }
 .intake__text{
-  flex:1;border:none;background:transparent;
+  flex:1;min-width:0;border:none;background:transparent;
   font-family:var(--font-body);font-size:.88rem;color:var(--ink);
   padding:12px 16px;outline:none;
 }
@@ -316,6 +317,24 @@ body{
 /* ── responsive topbar ── */
 @media(max-width:640px){
   .topbar-sub{display:none}
+}
+@media(max-width:480px){
+  .topbar__inner{height:56px;padding:0 14px;gap:8px}
+  .brand small{display:none}
+  .badge-demo{font-size:.66rem;padding:3px 7px}
+  .wrap{padding:22px 14px 48px}
+  .intake__bar{padding:10px 12px}
+  .intake__bar-badge{display:none}
+  .intake__messages{padding:12px}
+  .intake__text{padding:12px}
+  .intake__hint{display:none}
+  .intake__send{min-height:44px;padding:0 16px}
+  .toast-wrap{left:14px;right:14px}
+  .toast{max-width:none}
+}
+@media(max-width:340px){
+  #ws-dot{font-size:0 !important}
+  #ws-dot::after{content:'●';font-size:.72rem}
 }
 </style>
 </head>
