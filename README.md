@@ -176,7 +176,7 @@ All variables are validated at startup by a `class-validator` schema in `backend
 | `CORS_ORIGIN` | Recommended | `*` | Allowed origin for the board API/WebSocket |
 | `NOTIFY_STATUSES` | No | all statuses | Comma-separated statuses that trigger a LINE push (e.g. `done` to conserve quota) |
 | `NOTIFY_ASSIGN` | No | `true` | Push to the group when a task is assigned |
-| `NOTIFICATION_RETRY_LIMIT` | No | `5` | Maximum LINE push attempts before an undelivered notification is marked failed |
+| `NOTIFICATION_RETRY_LIMIT` | No | `5` | Automatic LINE push attempt limit before operator intervention |
 | `NOTIFICATION_RETRY_INTERVAL_MS` | No | `60000` | Delay between LINE push attempts; must be at least 1000 ms |
 | `ANTHROPIC_API_KEY` | No | — | Enables AI classification of keyword-free messages via the Claude API |
 | `AI_EXTRACT_MODEL` | No | `claude-haiku-4-5` | Claude model for extraction; use `claude-opus-4-8` for higher accuracy |
@@ -211,21 +211,48 @@ WebSocket: clients send `auth.key` on connect when a password is set; the server
 
 Status-change and assignment pushes use a PostgreSQL outbox. The card mutation and notification record commit together, then delivery runs in the background with the same LINE retry key on every attempt. LINE downtime therefore does not roll back a board change. Check `/health` for undelivered notifications; rows that reach the retry limit remain counted as `failed` for operator follow-up.
 
+### Inspect and redrive failed notifications
+
+The backend includes a database-only CLI for deployment operators. Its scope is **every LINE group in the database**. Use a named PostgreSQL login for each operator, supplied through `OUTBOX_OPERATOR_DATABASE_URL`. A DBA can grant read-only inspection and redrive separately. Board keys have no access to this command.
+
+```sql
+-- Replace operator_login with an existing individual login.
+GRANT USAGE ON SCHEMA public TO operator_login;
+GRANT SELECT ON public.failed_notifications TO operator_login;
+GRANT EXECUTE ON FUNCTION public.redrive_notification(uuid) TO operator_login;
+```
+
+From `backend/`, run `npm run build` once, or use the compiled backend image. Supply the operator URL through your credential manager.
+
+```sh
+npm run --silent outbox -- list                    # up to 100 terminal failures as JSON
+npm run --silent outbox -- list <last-operator-id> # next page in UUID order
+npm run --silent outbox -- redrive <operator-id>   # queue one additional attempt
+```
+
+The list contains an independent operator ID, attempt count, first claim time, a safe failure category, and the current redrive decision. After resolving the cause of a rate limit, or investigating an ambiguous or interrupted request, select one row marked `eligible`. Redrive rechecks eligibility under a row lock. Exit status 0 with `{"queued":true}` confirms the queue change. Status 1 means the row is missing or ineligible. Status 2 means a usage, permission, or database error. Only the background worker contacts LINE.
+
+Each row can receive one extra attempt over its lifetime. The database records the authenticated login, time, operator ID and prior attempt count in `public.notification_redrive_audit` in the same transaction. The audit survives successful delivery. A definitive rejection arriving after an inferred interruption can cancel an approved redrive before its extra claim. The original authorization remains recorded with a cancellation timestamp. Once the extra claim is made, an older failure cannot overwrite it. Use individual logins even when credentials are brokered, since a shared database login yields a shared audit identity.
+
+The worker preserves the original recipient, message, and retry key. A timeout or 5xx may follow acceptance, so every attempt uses the first durable claim as the earliest possible send. The worker stops at 23 hours, reserving one hour of LINE’s 24-hour deduplication window for timing uncertainty. A successful response or a 409 with an accepted request ID settles the row. Acceptance does not confirm receipt by a user. [LINE retry semantics](https://developers.line.biz/en/docs/messaging-api/retrying-api-request/)
+
+Apply migration 008 and replace all older workers before enabling operator grants. Previously failed rows without structured failure history, invalid keys, uncertain timestamps, expired windows and permanent rejections stay available for inspection. Redrive provides no key rotation or budget reset. A crash after the extra claim can consume the allowance even if LINE never received the request.
+
 ---
 
 ## Testing
 
 ```bash
-# Unit tests — 124 tests across signature verification, webhook controller/service,
+# Unit tests across signature verification, webhook controller/service,
 # notification retries, AI extraction, board guard, realtime gateway, and DTO validation.
 cd backend && npm test
 
 # Unit tests with coverage (c8; thresholds: lines 80, functions 80, branches 70).
 cd backend && npm run test:cov
 
-# Integration tests — 18 tests against a real PostgreSQL instance.
-# Covers position ordering, advisory-lock concurrency, idempotent saveMessage,
-# and findAll group scoping. Requires Postgres up and migrated.
+# Integration tests against real PostgreSQL. Set DATABASE_URL to a dedicated test database.
+# Covers ordering, tenant scoping, outbox redrive races, eligibility and audit.
+# The operator privilege test switches session identities and requires a test superuser.
 docker compose -f docker-compose.dev.yml up -d
 cd backend && npm run migrate && npm run test:integration
 

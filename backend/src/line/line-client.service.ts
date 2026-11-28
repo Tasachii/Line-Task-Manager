@@ -59,7 +59,7 @@ export class LineClientService {
       }, retryKey);
     } catch (e) {
       const response = e as { status?: number; headers?: Headers };
-      if (response.status === 409 && response.headers?.has('x-line-accepted-request-id')) return;
+      if (response.status === 409 && response.headers?.get('x-line-accepted-request-id')?.trim()) return;
       throw e;
     }
   }

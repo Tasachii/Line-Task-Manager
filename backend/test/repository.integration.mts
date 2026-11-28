@@ -156,12 +156,12 @@ test('notification claims are exclusive, fenced, counted, and recover an interru
     assert.equal(secondClaim?.id, firstId);
     assert.equal(secondClaim?.attempts, 2, 'claim attempts increase monotonically');
 
-    await outbox.markFailedAttempt(firstId, 1, 'stale failure', true);
+    await outbox.markFailedAttempt(firstId, 1, 'ambiguous', true);
     const afterStaleFailure = await isolatedDb.query('SELECT status, attempts FROM notification_outbox WHERE id = $1', [firstId]);
     assert.deepEqual(afterStaleFailure[0], { status: 'pending', attempts: 2 });
 
-    await outbox.markFailedAttempt(firstId, 2, 'terminal failure', true);
-    await outbox.markDelivered(firstId);
+    await outbox.markFailedAttempt(firstId, 2, 'ambiguous', true);
+    await outbox.markDelivered(firstId, firstClaim!.retry_key);
     assert.equal((await isolatedDb.query('SELECT 1 FROM notification_outbox WHERE id = $1', [firstId])).length, 0, 'authoritative late success removes a terminal row with the same immutable retry key');
 
     const permanentId = await enqueue('permanent failure');
@@ -175,7 +175,7 @@ test('notification claims are exclusive, fenced, counted, and recover an interru
       const claim = await outbox.claimDue(60_000, 3);
       assert.equal(claim?.id, permanentId);
       assert.equal(claim?.attempts, attempt);
-      await outbox.markFailedAttempt(permanentId, attempt, 'LINE unavailable', attempt === 3);
+      await outbox.markFailedAttempt(permanentId, attempt, 'ambiguous', attempt === 3);
       if (attempt < 3) {
         await isolatedDb.query('UPDATE notification_outbox SET next_attempt_at = now() WHERE id = $1', [permanentId]);
       }

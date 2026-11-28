@@ -55,7 +55,8 @@ class MemoryOutboxRepository {
     record.attempts += 1;
     record.first_attempt_at ??= new Date();
     record.nextAttempt = Date.now() + retryDelayMs;
-    return { ...record };
+    return { ...record, operator_id: record.id, attempt_limit: retryLimit,
+      remaining_ms: record.first_attempt_at.getTime() + 23 * 3600000 - Date.now() };
   }
 
   async markDelivered(id: string) {
@@ -208,4 +209,19 @@ test('health reports pending and terminally failed notification counts', async (
     db: 'up',
     notifications: { undelivered: 3, pending: 2, failed: 1 },
   });
+});
+
+test('409 without an accepted request ID stops with a safe rejection diagnostic', async () => {
+  const repo = new MemoryOutboxRepository();
+  await repo.seed('fixture-group', 'fixture-payload');
+  const line = new LineClientService({ lineChannelAccessToken: 'fixture' } as never);
+  const response = { status: 409, headers: new Headers(), message: 'fixture-private-provider-detail' };
+  (line as any).client = { pushMessage: async () => { throw response; } };
+  const service = new NotificationOutboxService(repo as never, line, {
+    notificationRetryIntervalMs: 1000, notificationRetryLimit: 5,
+  } as never);
+  await service.processPending();
+  assert.equal(repo.records[0].status, 'failed');
+  assert.equal(repo.records[0].lastError, 'rejected');
+  assert.equal(repo.records[0].attempts, 1);
 });

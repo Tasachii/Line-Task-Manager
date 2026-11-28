@@ -8,9 +8,12 @@ export interface OutboxNotification {
   message_text: string;
   retry_key: string;
   attempts: number;
-  created_at: Date;
-  first_attempt_at: Date;
+  operator_id: string;
+  remaining_ms: number | null;
+  attempt_limit: number;
 }
+
+export type PushFailure = 'ambiguous' | 'rate_limited' | 'rejected' | 'window_closed';
 
 export interface UndeliveredCounts {
   pending: number;
@@ -35,52 +38,84 @@ export class NotificationOutboxRepository {
     return this.db.withTransaction(async (query) => {
       await query(
         `UPDATE notification_outbox
-         SET status = 'failed', last_error = 'retry limit exhausted after interrupted delivery', updated_at = now()
-         WHERE status = 'pending' AND attempts >= $1 AND next_attempt_at <= now()`,
+         SET status = 'failed',
+             failure_kind = CASE WHEN first_attempt_at > updated_at THEN 'window_closed' ELSE 'interrupted' END,
+             updated_at = now()
+         WHERE status = 'pending' AND attempts >= COALESCE(redrive_attempt, $1) AND next_attempt_at <= now()`,
         [retryLimit],
       );
       const params: unknown[] = [retryLimit, retryDelayMs];
       const rows = await query<OutboxNotification>(
         `WITH candidate AS (
-           SELECT id FROM notification_outbox
-           WHERE status = 'pending' AND attempts < $1
+           SELECT id, CASE
+             WHEN attempts = 0 AND first_attempt_at IS NULL THEN public.notification_retry_deadline(retry_key, now())
+             WHEN attempts > 0 AND first_attempt_at <= updated_at
+               THEN public.notification_retry_deadline(retry_key, first_attempt_at)
+           END AS deadline
+           FROM notification_outbox
+           WHERE status = 'pending' AND attempts < COALESCE(redrive_attempt, $1)
              AND next_attempt_at <= now()
            ORDER BY created_at
            LIMIT 1
            FOR UPDATE SKIP LOCKED
          )
          UPDATE notification_outbox AS notification
-         SET attempts = notification.attempts + 1,
-             first_attempt_at = COALESCE(notification.first_attempt_at, now()),
+         SET status = CASE WHEN candidate.deadline > statement_timestamp() THEN 'pending' ELSE 'failed' END,
+             failure_kind = CASE WHEN candidate.deadline > statement_timestamp() THEN NULL ELSE 'window_closed' END,
+             attempts = CASE WHEN candidate.deadline > statement_timestamp()
+                             THEN notification.attempts + 1 ELSE notification.attempts END,
+             first_attempt_at = CASE WHEN candidate.deadline IS NOT NULL AND notification.attempts = 0
+                                     THEN now() ELSE notification.first_attempt_at END,
              next_attempt_at = now() + ($2 * interval '1 millisecond'),
              updated_at = now()
          FROM candidate
          WHERE notification.id = candidate.id
          RETURNING notification.id, notification.group_id, notification.message_text,
-                   notification.retry_key, notification.attempts, notification.created_at,
-                   notification.first_attempt_at`,
+                   notification.retry_key, notification.attempts, notification.operator_id,
+                   COALESCE(notification.redrive_attempt, $1) AS attempt_limit,
+                   (1000 * EXTRACT(epoch FROM candidate.deadline - clock_timestamp()))::float8 AS remaining_ms`,
         params,
       );
       return rows[0] ?? null;
     });
   }
 
-  async markDelivered(id: string): Promise<void> {
+  async markDelivered(id: string, retryKey: string): Promise<void> {
     await this.db.query(
-      'DELETE FROM notification_outbox WHERE id = $1',
-      [id],
+      'DELETE FROM notification_outbox WHERE id = $1 AND retry_key = $2',
+      [id, retryKey],
     );
   }
 
-  async markFailedAttempt(id: string, attempt: number, error: string, terminal: boolean): Promise<void> {
-    await this.db.query(
-      `UPDATE notification_outbox
-       SET status = CASE WHEN $3 THEN 'failed' ELSE 'pending' END,
-           last_error = $4,
-           updated_at = now()
-       WHERE id = $1 AND status = 'pending' AND attempts = $2`,
-      [id, attempt, terminal, error],
-    );
+  async markFailedAttempt(id: string, attempt: number, kind: PushFailure, terminal: boolean): Promise<void> {
+    await this.db.withTransaction(async (query) => {
+      // A definitive rejection supersedes an inferred interruption, including an
+      // operator grant still awaiting its extra claim. The attempt fences older failures.
+      const [settled] = await query<{ operator_id: string; cancelled: boolean | null }>(
+        `UPDATE notification_outbox
+         SET status = CASE WHEN $3 OR $4 = 'rejected' THEN 'failed' ELSE 'pending' END,
+             failure_kind = $4, last_error = NULL,
+             updated_at = now()
+         WHERE id = $1 AND attempts = $2
+           AND (
+             (status = 'pending' AND (redrive_attempt IS NULL OR redrive_attempt = attempts))
+             OR ($4 = 'rejected' AND failure_kind = 'interrupted'
+                 AND (status = 'failed' OR (status = 'pending' AND redrive_attempt > attempts)))
+           )
+         RETURNING operator_id, redrive_attempt > attempts AS cancelled`,
+        [id, attempt, terminal, kind],
+      );
+      if (settled?.cancelled) {
+        // A separate statement sees a concurrent grant committed while the row
+        // update was waiting for its lock. Both changes still commit together.
+        await query(
+          `UPDATE public.notification_redrive_audit
+           SET cancelled_at = clock_timestamp()
+           WHERE operator_id = $1 AND cancelled_at IS NULL`,
+          [settled.operator_id],
+        );
+      }
+    });
   }
 
   async countUndelivered(): Promise<UndeliveredCounts> {

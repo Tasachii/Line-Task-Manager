@@ -6,8 +6,6 @@ import {
   UndeliveredCounts,
 } from './notification-outbox.repository';
 
-const LINE_RETRY_KEY_WINDOW_MS = 23 * 60 * 60 * 1000;
-
 @Injectable()
 export class NotificationOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(NotificationOutboxService.name);
@@ -54,23 +52,18 @@ export class NotificationOutboxService implements OnModuleInit, OnModuleDestroy 
   }
 
   private async processOne(): Promise<boolean> {
+    const started = performance.now();
+    const wallStart = Date.now();
     const notification = await this.repo.claimDue(
       this.config.notificationRetryIntervalMs,
       this.config.notificationRetryLimit,
     );
     if (!notification) return false;
 
-    const retryWindowExpired =
-      notification.attempts > 1 &&
-      Date.now() - new Date(notification.first_attempt_at).getTime() >= LINE_RETRY_KEY_WINDOW_MS;
-    if (retryWindowExpired) {
-      await this.repo.markFailedAttempt(
-        notification.id,
-        notification.attempts,
-        'LINE retry-key window expired',
-        true,
-      );
-      this.logger.error(`LINE notification ${notification.id} expired before delivery`);
+    // Use the database's window, subtracting even the time spent obtaining the claim.
+    const elapsed = Math.max(performance.now() - started, Date.now() - wallStart);
+    if (notification.remaining_ms === null || !(notification.remaining_ms > elapsed)) {
+      await this.repo.markFailedAttempt(notification.id, notification.attempts, 'window_closed', true);
       return true;
     }
 
@@ -80,26 +73,25 @@ export class NotificationOutboxService implements OnModuleInit, OnModuleDestroy 
         notification.message_text,
         notification.retry_key,
       );
-      await this.repo.markDelivered(notification.id);
     } catch (error) {
-      const terminal = notification.attempts >= this.config.notificationRetryLimit;
-      const message = this.errorMessage(error);
-      await this.repo.markFailedAttempt(notification.id, notification.attempts, message, terminal);
-      const detail = terminal ? 'gave up' : 'will retry';
-      this.logger.warn(
-        `LINE notification ${notification.id} attempt ${notification.attempts} failed (${detail}): ${message}`,
-      );
+      const status = (error as { status?: number } | null)?.status;
+      const kind = status === 429 ? 'rate_limited'
+        : status !== undefined && status >= 400 && status < 500 ? 'rejected' : 'ambiguous';
+      const terminal = kind !== 'ambiguous' || notification.attempts >= notification.attempt_limit;
+      await this.repo.markFailedAttempt(notification.id, notification.attempts, kind, terminal);
+      this.logger.warn(`LINE notification ${notification.operator_id} attempt ${notification.attempts}: ${kind}`);
+      return true;
     }
+
+    // Even an older claim's confirmed acceptance settles the same immutable request.
+    // A DB failure here leaves an ambiguous claim for the normal bounded recovery path.
+    await this.repo.markDelivered(notification.id, notification.retry_key);
     return true;
   }
 
-  private errorMessage(error: unknown): string {
-    return error instanceof Error ? error.message : String(error);
-  }
-
   private run(operation: () => Promise<unknown>): void {
-    void operation().catch((error) => {
-      this.logger.error(`LINE notification worker failed: ${this.errorMessage(error)}`);
+    void operation().catch(() => {
+      this.logger.error('LINE notification worker database operation failed');
     });
   }
 }
